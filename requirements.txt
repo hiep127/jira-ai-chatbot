@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+flet>=0.21.0
+httpx
+keyring
+pytest
+pytest-asyncio
+langgraph
+langchain-openai
+langchain-anthropic
+langchain-mcp-adapters
+pyinstaller

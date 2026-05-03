@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+
+# Testing
+.pytest_cache/
+
+# Build artifacts
+dist/
+build/
+
+# Environment files
+.env
+*.env
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Claude Code local config
+.claude/
+
+# Windows
+Thumbs.db
+Desktop.ini
