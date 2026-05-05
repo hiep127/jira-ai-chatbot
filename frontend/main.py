@@ -1,17 +1,15 @@
 import asyncio
 import threading
 import uuid
+from typing import Any
 
 import httpx
 import uvicorn
 import flet as ft
-from frontend.views.config import open_config_dialog
+from frontend.views.jira_settings import open_jira_settings_dialog
 # Imported directly so the compiled binary can run the backend in-process.
 # subprocess.Popen(sys.executable) would fork-bomb the packaged .exe.
 from backend.main import app as _backend_app
-
-_STATUS_OPTIONS  = ["Open", "To Do", "In Progress", "Resolved", "Closed", "Done"]
-_PROJECT_OPTIONS = ["SPAWS", "LGE"]
 
 
 async def _start_backend() -> None:
@@ -51,96 +49,16 @@ async def main(page: ft.Page) -> None:
     await _start_backend()
     thread_id = str(uuid.uuid4())
 
+    app_state: dict[str, Any] = {
+        "filter_profile_name": "",
+        "jira_env":            "",
+        "parent_link":         "",
+        "filters":             {},
+    }
+
     message_list = ft.ListView(expand=True, spacing=8, padding=ft.padding.all(10), auto_scroll=True)
 
-    parent_link_field = ft.TextField(
-        hint_text="Jira Parent Link (e.g. PROJ-42)",
-        expand=True,
-        content_padding=ft.padding.symmetric(horizontal=10, vertical=8),
-    )
-
-    # Filter builder state — each entry holds refs to the row's controls
-    filter_rows: list[dict] = []
-    filter_rows_column = ft.Column(controls=[], spacing=6)
-
-    def _on_field_change(e, row_data: dict) -> None:
-        selected = e.control.value
-        if selected == "Status":
-            new_ctrl = ft.Dropdown(
-                options=[ft.dropdown.Option(o) for o in _STATUS_OPTIONS],
-                width=200,
-                content_padding=ft.padding.symmetric(horizontal=10, vertical=4),
-            )
-        elif selected == "Project":
-            new_ctrl = ft.Dropdown(
-                options=[ft.dropdown.Option(o) for o in _PROJECT_OPTIONS],
-                width=200,
-                content_padding=ft.padding.symmetric(horizontal=10, vertical=4),
-            )
-        else:  # Assignee or any future text field
-            new_ctrl = ft.TextField(hint_text="Enter value...", width=200)
-        row_data["value_container"].content = new_ctrl
-        page.update()
-
-    def _remove_row(row_data: dict) -> None:
-        filter_rows.remove(row_data)
-        filter_rows_column.controls.remove(row_data["row"])
-        page.update()
-
-    def _add_filter_row(e=None) -> None:
-        row_data: dict = {}
-
-        field_dd = ft.Dropdown(
-            options=[
-                ft.dropdown.Option("Project"),
-                ft.dropdown.Option("Assignee"),
-                ft.dropdown.Option("Status"),
-            ],
-            hint_text="Field",
-            width=150,
-            content_padding=ft.padding.symmetric(horizontal=10, vertical=4),
-            on_change=lambda ev: _on_field_change(ev, row_data),
-        )
-
-        value_container = ft.Container(
-            content=ft.TextField(hint_text="Enter value...", width=200),
-        )
-
-        remove_btn = ft.IconButton(
-            ft.Icons.REMOVE_CIRCLE_OUTLINE,
-            tooltip="Remove filter",
-            icon_color=ft.Colors.RED_400,
-            on_click=lambda ev: _remove_row(row_data),
-        )
-
-        row = ft.Row(
-            controls=[field_dd, value_container, remove_btn],
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=8,
-        )
-
-        row_data["field_dd"] = field_dd
-        row_data["value_container"] = value_container
-        row_data["row"] = row
-
-        filter_rows.append(row_data)
-        filter_rows_column.controls.append(row)
-        page.update()
-
-    def _collect_filters() -> dict[str, list[str]]:
-        result: dict[str, list[str]] = {}
-        for row_data in filter_rows:
-            field = row_data["field_dd"].value
-            ctrl  = row_data["value_container"].content
-            value = ctrl.value if ctrl and ctrl.value else None
-            if field and value:
-                if field not in result:
-                    result[field] = []
-                if value not in result[field]:  # prevent exact duplicates
-                    result[field].append(value)
-        return result
-
-    async def on_send(e=None) -> None:
+    async def on_send(e: ft.ControlEvent | None = None) -> None:
         text = input_field.value.strip()
         if not text:
             return
@@ -160,10 +78,10 @@ async def main(page: ft.Page) -> None:
                     json={
                         "prompt":      text,
                         "thread_id":   thread_id,
-                        "prefixes":    ["SPAWS", "LGE"],
+                        "prefixes":    [app_state["jira_env"]] if app_state["jira_env"] else [],
                         "mode":        "TEAM",
-                        "parent_link": parent_link_field.value.strip(),
-                        "filters":     _collect_filters(),
+                        "parent_link": app_state["parent_link"],
+                        "filters":     app_state["filters"],
                     },
                 )
             if r.status_code == 200:
@@ -203,25 +121,12 @@ async def main(page: ft.Page) -> None:
                         ft.Text("AI Agent", size=20, weight=ft.FontWeight.BOLD),
                         ft.IconButton(
                             ft.Icons.SETTINGS,
-                            tooltip="Configure Model",
-                            on_click=lambda e: open_config_dialog(page),
+                            tooltip="Settings",
+                            on_click=lambda e: open_jira_settings_dialog(page, app_state),
                         ),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
-                ft.Row(
-                    controls=[parent_link_field],
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                ft.Row(
-                    controls=[
-                        ft.Text("Filter Builder", size=13, color=ft.Colors.GREY_400),
-                        ft.TextButton("+ Add Filter", on_click=_add_filter_row),
-                    ],
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=8,
-                ),
-                filter_rows_column,
                 message_list,
                 ft.Row(
                     controls=[input_field, send_btn],

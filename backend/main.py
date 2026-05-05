@@ -14,7 +14,7 @@ from backend.agent.graph import build_graph
 class ChatRequest(BaseModel):
     prompt: str
     thread_id: str = "default"
-    prefixes: list[str] = ["SPAWS", "LGE"]
+    prefixes: list[str] = []
     mode: str = "TEAM"
     parent_link: str = ""
     filters: dict[str, list[str]] = {}

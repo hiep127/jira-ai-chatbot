@@ -1,0 +1,19 @@
+# Python, FastAPI, and Flet Execution Standards
+
+All Python code written for this application MUST adhere to the following rules. The QA Reviewer will fail any code that violates these standards.
+
+## 1. Type Hinting
+- Every function, method, and endpoint MUST have complete Python type hinting.
+- Use `list[str]`, `dict[str, Any]`, etc., natively (Python 3.10+).
+
+## 2. FastAPI Backend Rules
+- All route handlers must be `async def`.
+- Every incoming payload and outgoing response MUST be validated using a Pydantic `BaseModel`. No raw dictionary returns from API endpoints.
+- Any Jira API failures must be caught and raised as explicit `HTTPException` errors with clear detail messages.
+
+## 3. Flet Frontend Rules
+- Do NOT write massive inline UI trees. Break complex Flet UI sections into separate helper functions (e.g., `def build_sidebar() -> ft.Container:`).
+- UI state must not be mixed with backend API logic. Use asynchronous HTTP calls (`httpx` or `aiohttp`) from the Flet client to the FastAPI backend.
+
+## 4. No Placeholder Code
+- Do not leave `pass`, `TODO`, or `FIXME` blocks in the code. If a function is defined in the plan, it must be fully implemented.
