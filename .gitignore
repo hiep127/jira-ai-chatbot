@@ -24,6 +24,10 @@ env/
 # Claude Code local config
 .claude/
 
+# Tool workspace directories
+.agents/
+.aider-desk/
+
 # Windows
 Thumbs.db
 Desktop.ini
