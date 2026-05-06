@@ -104,6 +104,10 @@ def make_orchestrator_fetch_node(fetch_tool):
         parent_link = state.get("parent_link", "")
         filters     = state.get("filters",     {})
 
+        selected_keys = state.get("selected_filter_keys", [])
+        if selected_keys:
+            filters = {k: v for k, v in filters.items() if k in selected_keys}
+
         context = f"Fetch all tickets for prefixes={prefixes}, mode='{mode}'."
         if parent_link:
             context += f" parent_link='{parent_link}'."

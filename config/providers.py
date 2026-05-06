@@ -28,6 +28,17 @@ def delete_key(provider: str) -> None:
         pass
 
 
+JIRA_PAT_KEY = "jira_pat"
+
+
+def get_jira_pat() -> str | None:
+    return keyring.get_password(KEYRING_SERVICE, JIRA_PAT_KEY)
+
+
+def set_jira_pat(pat: str) -> None:
+    keyring.set_password(KEYRING_SERVICE, JIRA_PAT_KEY, pat)
+
+
 def save_active_provider(provider: str) -> None:
     _SETTINGS_PATH.write_text(json.dumps({"active": provider}), encoding="utf-8")
 

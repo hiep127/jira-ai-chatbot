@@ -9,6 +9,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import BaseModel
 
 from backend.agent.graph import build_graph
+from backend.utils.jql_parser import parse_jql as _parse_jql
 
 
 class ChatRequest(BaseModel):
@@ -18,11 +19,26 @@ class ChatRequest(BaseModel):
     mode: str = "TEAM"
     parent_link: str = ""
     filters: dict[str, list[str]] = {}
+    selected_filter_keys: list[str] = []
 
 
 class ChatResponse(BaseModel):
     response: str
     thread_id: str
+
+
+class JQLParseRequest(BaseModel):
+    jql: str
+
+
+class FilterRow(BaseModel):
+    field: str
+    operator: str
+    value: list[str]
+
+
+class JQLParseResponse(BaseModel):
+    rows: list[FilterRow]
 
 
 @asynccontextmanager
@@ -65,13 +81,14 @@ async def chat(body: ChatRequest, request: Request) -> ChatResponse:
     try:
         result = await request.app.state.graph.ainvoke(
             {
-                "messages":    [HumanMessage(content=body.prompt)],
-                "prefixes":    body.prefixes,
-                "mode":        body.mode,
-                "tickets":     [],
-                "summaries":   [],
-                "parent_link": body.parent_link,
-                "filters":     body.filters,
+                "messages":             [HumanMessage(content=body.prompt)],
+                "prefixes":             body.prefixes,
+                "mode":                 body.mode,
+                "tickets":              [],
+                "summaries":            [],
+                "parent_link":          body.parent_link,
+                "filters":              body.filters,
+                "selected_filter_keys": body.selected_filter_keys,
             },
             config={"configurable": {"thread_id": body.thread_id}},
         )
@@ -81,3 +98,12 @@ async def chat(body: ChatRequest, request: Request) -> ChatResponse:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/filters/parse-jql", response_model=JQLParseResponse)
+async def parse_jql_endpoint(payload: JQLParseRequest) -> JQLParseResponse:
+    try:
+        rows = _parse_jql(payload.jql.strip())
+        return JQLParseResponse(rows=[FilterRow(**r) for r in rows])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))

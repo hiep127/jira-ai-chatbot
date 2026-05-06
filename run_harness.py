@@ -32,6 +32,8 @@ def stream_command(command: list[str]) -> str:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 bufsize=1
             )
             
@@ -46,7 +48,7 @@ def stream_command(command: list[str]) -> str:
     except Exception as e:
         # Fallback if TTY access fails
         print(f"\n[Warning: TTY direct write failed: {e}. Falling back to standard print.]")
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
         for line in iter(process.stdout.readline, ''):
             print(line, end='', flush=True)
             full_output += line
@@ -56,6 +58,20 @@ def stream_command(command: list[str]) -> str:
 
 def _claude_cmd(prompt: str) -> list[str]:
     return ["powershell", "-ExecutionPolicy", "Bypass", "-File", _CLAUDE_PS1, "-p", prompt, "--dangerously-skip-permissions"]
+
+# --- TERMINAL INPUT HELPER ---
+def _ask_tty(prompt: str) -> str:
+    """Read user input directly from the console device, bypassing stdin redirection."""
+    tty_device = "CON" if os.name == "nt" else "/dev/tty"
+    try:
+        with open(tty_device, "w") as tty_out:
+            tty_out.write(prompt)
+            tty_out.flush()
+        with open(tty_device, "r") as tty_in:
+            return tty_in.readline().strip().lower()
+    except Exception:
+        print("\n[Non-interactive environment — auto-proceeding.]\n")
+        return "y"
 
 # --- STEP REPORTERS ---
 def _report_plan() -> None:
@@ -105,10 +121,7 @@ def plan_reviewer_node(state: AgentState):
         print("VERDICT: APPROVED")
         print("=" * 48 + "\n")
         _report_plan()
-        try:
-            answer = input("Plan approved. Proceed to coding? [Y/n]: ").strip().lower()
-        except EOFError:
-            answer = "y"
+        answer = _ask_tty("Plan approved. Proceed to coding? [Y/n]: ")
         if answer == "n":
             print("Halted by user. Edit feature_plan.md and re-run when ready.")
             sys.exit(0)
@@ -123,11 +136,22 @@ def coder_node(state: AgentState):
     print(f"\n==============================================")
     print(f" CODING PHASE: /jira-coder (Iteration {state.get('iterations', 0) + 1})")
     print(f"==============================================\n")
-    command = "/jira-coder"
-    if state.get("status") == "code_failed":
-        command += f" CRITICAL: Fix these QA errors: {state['feedback']}"
+    extra = f" CRITICAL: Fix these QA errors: {state['feedback']}" if state.get("status") == "code_failed" else ""
 
-    stream_command(_claude_cmd(command))
+    output = stream_command(_claude_cmd(f"/jira-coder{extra}"))
+
+    # If the skill found unresolved questions, collect answers then re-invoke.
+    if "NEEDS_ANSWERS:" in output:
+        raw_questions = output.split("NEEDS_ANSWERS:", 1)[1].strip().splitlines()
+        questions = [q.strip() for q in raw_questions if q.strip()]
+        print("\n[Coder paused: unresolved questions in plan]\n")
+        answers = []
+        for q in questions:
+            answer = _ask_tty(f"  {q}\n  Answer: ")
+            answers.append(f"{q} -> {answer}")
+        answers_block = "\n".join(answers)
+        stream_command(_claude_cmd(f"/jira-coder{extra} Answers to open questions:\n{answers_block}"))
+
     _report_git_diff()
     iters = state.get("iterations", 0) + 1
     return {"status": "qa_testing", "iterations": iters}
@@ -180,9 +204,28 @@ app = workflow.compile()
 
 # 5. EXECUTION
 if __name__ == "__main__":
-    target_file = sys.argv[1] if len(sys.argv) > 1 else "req.md"
-    if not os.path.exists(target_file):
-        print(f"Error: {target_file} not found. Run from the project root.")
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("req_file", nargs="?", default="req.md")
+    parser.add_argument("--coder", action="store_true",
+                        help="Skip planning phase and go straight to coding (plan already approved)")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.req_file):
+        print(f"Error: {args.req_file} not found. Run from the project root.")
         sys.exit(1)
-    print(f"Starting Production Harness for {target_file}")
-    app.invoke({"req_file": target_file, "iterations": 0, "feedback": "", "status": "starting"})
+
+    if args.coder:
+        print(f"Starting Harness (coder phase) for {args.req_file}")
+        state: AgentState = {"req_file": args.req_file, "feedback": "", "iterations": 0, "status": "plan_approved"}
+        while state["iterations"] < 5 and state["status"] != "passed":
+            state = {**state, **coder_node(state)}
+            state = {**state, **qa_tester_node(state)}
+            if state["status"] == "code_failed" and state["iterations"] >= 5:
+                print("Max QA iterations reached.")
+                break
+        if state["status"] == "passed":
+            print("Feature complete.")
+    else:
+        print(f"Starting Production Harness for {args.req_file}")
+        app.invoke({"req_file": args.req_file, "iterations": 0, "feedback": "", "status": "starting"})

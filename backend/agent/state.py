@@ -13,6 +13,7 @@ class AgentState(MessagesState):
     summaries: Annotated[list[str], operator.add]
     parent_link: str
     filters: dict[str, list[str]]
+    selected_filter_keys: list[str]
 
 
 class SummarizerState(MessagesState):
