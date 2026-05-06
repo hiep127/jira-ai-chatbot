@@ -49,7 +49,7 @@ def open_jira_settings_dialog(
     filter_rows_column = ft.Column(controls=[], spacing=6)
 
     profile_name_field = ft.TextField(
-        label="Filter Profile Name",
+        label="Profile Name *",
         hint_text="e.g. My Sprint View",
         value=state.get("filter_profile_name", ""),
         expand=True,
@@ -57,7 +57,7 @@ def open_jira_settings_dialog(
     )
 
     pat_field = ft.TextField(
-        label="Jira Personal Access Token",
+        label="Jira PAT *",
         password=True,
         can_reveal_password=True,
         value=get_jira_pat() or "",
@@ -80,7 +80,7 @@ def open_jira_settings_dialog(
             _parsed_jira_env = ""
 
     parent_link_field = ft.TextField(
-        label="Jira Parent Link (required)",
+        label="Jira Parent Link *",
         hint_text="e.g. https://jira.lge.com/browse/PROJ-42",
         value=state.get("parent_link", ""),
         expand=True,
@@ -241,14 +241,17 @@ def open_jira_settings_dialog(
         return result
 
     def on_save(e: ft.ControlEvent) -> None:
-        if not parent_link_field.value.strip():
-            page.open(ft.SnackBar(
-                content=ft.Text(
-                    "Jira Parent Link is required. "
-                    "Enter a full URL (e.g. https://jira.lge.com/browse/PROJ-42)."
-                ),
-                bgcolor=ft.Colors.RED_700,
-            ))
+        if (
+            not profile_name_field.value.strip()
+            or not pat_field.value.strip()
+            or not parent_link_field.value.strip()
+        ):
+            show_error_dialog(
+                page,
+                "Validation Error: Missing Required Fields.\n\n"
+                "Remediation: You must provide a Profile Name, Jira PAT, and "
+                "Parent Link before saving.",
+            )
             return
         if filter_rows and not validate_filters():
             return
@@ -372,6 +375,15 @@ def _build_dialog_content(
 ) -> ft.Container:
     column = ft.Column(
         controls=[
+            ft.Text("Profile Name *", weight=ft.FontWeight.BOLD),
+            profile_name_field,
+            ft.Divider(),
+            ft.Text("Jira PAT *", weight=ft.FontWeight.BOLD),
+            pat_field,
+            ft.Divider(),
+            ft.Text("Jira Parent Link *", weight=ft.FontWeight.BOLD),
+            parent_link_field,
+            ft.Divider(),
             ft.Card(
                 content=ft.Container(
                     content=ft.Column(
@@ -388,15 +400,6 @@ def _build_dialog_content(
                     padding=ft.padding.all(12),
                 ),
             ),
-            ft.Divider(),
-            ft.Text("Filter Profile Name", weight=ft.FontWeight.BOLD),
-            profile_name_field,
-            ft.Divider(),
-            ft.Text("Jira Personal Access Token", weight=ft.FontWeight.BOLD),
-            pat_field,
-            ft.Divider(),
-            ft.Text("Jira Parent Link (required)", weight=ft.FontWeight.BOLD),
-            parent_link_field,
             ft.Divider(),
             ft.Text(
                 "Current Saved Filters (check to include in agent queries)",

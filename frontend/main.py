@@ -100,15 +100,10 @@ async def main(page: ft.Page) -> None:
 
     message_list = ft.ListView(expand=True, spacing=8, padding=ft.padding.all(10), auto_scroll=True)
 
-    async def on_send(e: ft.ControlEvent | None = None) -> None:
-        text = input_field.value.strip()
-        if not text:
-            return
-
-        input_field.value = ""
+    async def process_chat_message(prompt_text: str) -> None:
         input_field.disabled = True
         send_btn.disabled = True
-        message_list.controls.append(_make_bubble(text, "user"))
+        message_list.controls.append(_make_bubble(prompt_text, "user"))
         thinking = ft.Text("Thinking...", italic=True, color=ft.Colors.GREY_400)
         message_list.controls.append(thinking)
         page.update()
@@ -125,7 +120,7 @@ async def main(page: ft.Page) -> None:
                 r = await client.post(
                     "http://localhost:8000/chat",
                     json={
-                        "prompt":               text,
+                        "prompt":               prompt_text,
                         "thread_id":            thread_id,
                         "prefixes":             [app_state["jira_env"]] if app_state["jira_env"] else [],
                         "mode":                 "TEAM",
@@ -165,6 +160,18 @@ async def main(page: ft.Page) -> None:
         input_field.focus()
         page.update()
 
+    async def on_send(e: ft.ControlEvent | None = None) -> None:
+        text = input_field.value.strip()
+        if not text:
+            return
+        input_field.value = ""
+        await process_chat_message(text)
+
+    async def on_daily_summary(e: ft.ControlEvent) -> None:
+        await process_chat_message(
+            "Please generate a detailed daily summary based on my currently active Jira filters."
+        )
+
     input_field = ft.TextField(
         hint_text="Type a message...",
         expand=True,
@@ -172,6 +179,11 @@ async def main(page: ft.Page) -> None:
         shift_enter=True,
     )
     send_btn = ft.IconButton(ft.Icons.SEND, on_click=on_send)
+    summary_btn = ft.ElevatedButton(
+        "Generate Daily Summary",
+        icon=ft.Icons.AUTO_AWESOME,
+        on_click=on_daily_summary,
+    )
 
     title_text = ft.Text("AI Agent", size=20, weight=ft.FontWeight.BOLD)
     settings_btn = ft.IconButton(
@@ -191,7 +203,7 @@ async def main(page: ft.Page) -> None:
                 ),
                 ft.Column(
                     controls=[
-                        ft.Row([title_text, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        ft.Row([title_text, summary_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                         message_list,
                         ft.Row([input_field, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ],

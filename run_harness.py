@@ -6,8 +6,7 @@ from langgraph.graph import StateGraph, END
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-# claude is installed as a PowerShell script on Windows
-_CLAUDE_PS1 = r"C:\Users\Admin\AppData\Roaming\npm\claude.ps1"
+_CLAUDE_EXE = r"C:\Users\Admin\.local\bin\claude.exe"
 
 # 1. Shared State
 class AgentState(TypedDict):
@@ -57,7 +56,7 @@ def stream_command(command: list[str]) -> str:
     return full_output
 
 def _claude_cmd(prompt: str) -> list[str]:
-    return ["powershell", "-ExecutionPolicy", "Bypass", "-File", _CLAUDE_PS1, "-p", prompt, "--dangerously-skip-permissions"]
+    return [_CLAUDE_EXE, "-p", prompt, "--dangerously-skip-permissions"]
 
 # --- TERMINAL INPUT HELPER ---
 def _ask_tty(prompt: str) -> str:
@@ -94,7 +93,7 @@ def _report_git_diff() -> None:
     print("=" * 48 + "\n")
 
 # --- 2. THE NODES ---
-def planner_node(state: AgentState):
+def planner_node(state: AgentState) -> dict:
     print(f"\n==============================================")
     print(f" PLANNING PHASE: /jira-planner")
     print(f"==============================================\n")
@@ -107,7 +106,7 @@ def planner_node(state: AgentState):
     _report_plan()
     return {"status": "plan_reviewing"}
 
-def plan_reviewer_node(state: AgentState):
+def plan_reviewer_node(state: AgentState) -> dict:
     print(f"\n==============================================")
     print(f" PLAN REVIEW PHASE: /jira-plan-reviewer")
     print(f"==============================================\n")
@@ -132,7 +131,7 @@ def plan_reviewer_node(state: AgentState):
         print("=" * 48 + "\n")
         return {"status": "plan_failed", "feedback": output}
 
-def coder_node(state: AgentState):
+def coder_node(state: AgentState) -> dict:
     print(f"\n==============================================")
     print(f" CODING PHASE: /jira-coder (Iteration {state.get('iterations', 0) + 1})")
     print(f"==============================================\n")
@@ -156,7 +155,7 @@ def coder_node(state: AgentState):
     iters = state.get("iterations", 0) + 1
     return {"status": "qa_testing", "iterations": iters}
 
-def qa_tester_node(state: AgentState):
+def qa_tester_node(state: AgentState) -> dict:
     print(f"\n==============================================")
     print(f" QA TESTING PHASE: /jira-reviewer")
     print(f"==============================================\n")
@@ -177,12 +176,12 @@ def qa_tester_node(state: AgentState):
         return {"status": "code_failed", "feedback": output}
 
 # 3. ROUTING LOGIC
-def route_from_plan_review(state: AgentState):
+def route_from_plan_review(state: AgentState) -> str:
     if state["iterations"] >= 3: return "end"
     if state["status"] == "plan_failed": return "planner"
     return "coder"
 
-def route_from_qa(state: AgentState):
+def route_from_qa(state: AgentState) -> str:
     if state["iterations"] >= 5: return "end"
     if state["status"] == "passed": return "end"
     return "coder"
