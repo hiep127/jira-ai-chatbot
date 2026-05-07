@@ -26,3 +26,58 @@ All proposed feature plans MUST strictly adhere to these 5 core rules. If a plan
 ## 5. Security & Credentials
 - **Rule:** No hardcoded tokens, passwords, or URLs.
 - **Requirement:** All credentials must be loaded via `os.getenv()` or an MCP-provided secure context.
+
+---
+
+## Project Structure
+
+```
+AI Chatbot/
+├── ARCHITECTURE.md          ← Engineering laws + project structure (this file)
+├── CLAUDE.md                ← Claude Code guidance and workflow rules
+├── feature_plan.md          ← Current implementation plan (regenerated each session)
+├── req.md                   ← Incoming feature requirements
+├── requirements.txt         ← Python dependency manifest
+├── run_harness.py           ← Dev harness for end-to-end test runs
+│
+├── frontend/
+│   ├── main.py              ← Flet app entry point; starts backend in-process, owns all UI state
+│   ├── __init__.py
+│   └── views/
+│       ├── chat.py          ← (reserved) — chat view decomposition target
+│       ├── config.py        ← Provider configuration dialog
+│       ├── jira_settings.py ← Jira filter import dialog and error-dialog helper
+│       └── __init__.py
+│
+├── backend/
+│   ├── main.py              ← FastAPI app; /chat, /compact, /health, /api/filters/parse-jql routes
+│   ├── __init__.py
+│   ├── agent/
+│   │   ├── graph.py         ← LangGraph graph definition and compilation (MemorySaver checkpointer)
+│   │   ├── llm_factory.py   ← Builds the LLM client from provider credentials at runtime
+│   │   ├── nodes.py         ← LangGraph node functions (llm_call, orchestrator_fetch, route_after_llm)
+│   │   ├── state.py         ← AgentState TypedDict (extends MessagesState)
+│   │   └── __init__.py
+│   └── utils/
+│       ├── jql_parser.py    ← Parses raw JQL strings into structured filter dicts (Context Budgeting)
+│       └── __init__.py
+│
+├── config/
+│   ├── providers.py         ← Credential read/write via keyring (Windows Credential Manager)
+│   └── __init__.py
+│
+├── tools/
+│   ├── jira_tool.py         ← MCP tool: fetches Jira issues and returns only parsed fields
+│   ├── mock_jira_mcp.py     ← Stub MCP server for local dev/testing without live Jira
+│   └── __init__.py
+│
+└── tests/
+    ├── test_ping.py         ← Health-check integration test
+    └── test_providers.py    ← Credential store unit tests
+```
+
+### Data Flow Summary
+
+**Flet → FastAPI:** `frontend/main.py` communicates with the backend exclusively over `localhost:8000` HTTP using `httpx`. It never imports backend modules for data access (exception: the in-process uvicorn launch at startup to avoid fork-bombing a packaged `.exe`).
+
+**FastAPI → LangGraph → MCP:** `/chat` passes the user prompt and filter state into the compiled LangGraph graph. The graph's nodes invoke Jira tool calls via MCP (`tools/jira_tool.py`). `jql_parser.py` and the tool layer ensure only extracted fields (`issue_key`, `summary`, `status`, `assignee`) reach the LLM — never raw Jira JSON payloads.

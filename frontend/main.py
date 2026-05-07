@@ -168,9 +168,61 @@ async def main(page: ft.Page) -> None:
         await process_chat_message(text)
 
     async def on_daily_summary(e: ft.ControlEvent) -> None:
+        if not app_state.get("filters"):
+            show_error_dialog(
+                page,
+                "Cannot generate summary: No Jira filters configured.\n\n"
+                "Remediation: Please open Settings (the gear icon) and import a JQL "
+                "string or add a filter before requesting a summary."
+            )
+            return
         await process_chat_message(
             "Please generate a detailed daily summary based on my currently active Jira filters."
         )
+
+    async def on_compact(e: ft.ControlEvent) -> None:
+        input_field.disabled = True
+        send_btn.disabled = True
+        compact_btn.disabled = True
+        compressing_bubble = _make_bubble("Compressing context...", "assistant")
+        message_list.controls.append(compressing_bubble)
+        page.update()
+
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(
+                    "http://localhost:8000/compact",
+                    json={"thread_id": thread_id},
+                )
+            message_list.controls.remove(compressing_bubble)
+
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("status") == "skipped":
+                    notice_text = data.get("message", "Not enough messages to compress.")
+                else:
+                    notice_text = "System: Chat history compacted to save tokens."
+                message_list.controls.append(
+                    ft.Container(
+                        content=ft.Text(notice_text, italic=True, size=11, color=ft.Colors.GREY_500),
+                        padding=ft.padding.symmetric(horizontal=14, vertical=4),
+                    )
+                )
+            else:
+                detail = r.json().get("detail", r.text)
+                show_error_dialog(page, f"Compact failed ({r.status_code}): {detail} If this persists, check the application logs for more detail.")
+
+        except httpx.ConnectError:
+            message_list.controls.remove(compressing_bubble)
+            show_error_dialog(page, "Could not reach the backend. Ensure the server is running.")
+        except Exception as exc:
+            message_list.controls.remove(compressing_bubble)
+            show_error_dialog(page, f"Compact request failed: {exc}. If this persists, check the application logs for more detail.")
+
+        input_field.disabled = False
+        send_btn.disabled = False
+        compact_btn.disabled = False
+        page.update()
 
     input_field = ft.TextField(
         hint_text="Type a message...",
@@ -179,6 +231,11 @@ async def main(page: ft.Page) -> None:
         shift_enter=True,
     )
     send_btn = ft.IconButton(ft.Icons.SEND, on_click=on_send)
+    compact_btn = ft.IconButton(
+        ft.Icons.COMPRESS,
+        tooltip="Compact Chat History",
+        on_click=on_compact,
+    )
     summary_btn = ft.ElevatedButton(
         "Generate Daily Summary",
         icon=ft.Icons.AUTO_AWESOME,
@@ -205,7 +262,7 @@ async def main(page: ft.Page) -> None:
                     controls=[
                         ft.Row([title_text, summary_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                         message_list,
-                        ft.Row([input_field, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        ft.Row([input_field, compact_btn, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ],
                     expand=True,
                 ),

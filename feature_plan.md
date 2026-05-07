@@ -1,327 +1,191 @@
-# Feature Plan: UI Refactoring v3 — Validation & Quick Actions
+# Feature Plan: UI Polish & Architecture Documentation
 
-**Source requirements:** `req.md`
-**Architecture laws:** `CLAUDE.md` (Plan Mode, DRY, Actionable Observability)
-**Planned:** 2026-05-06
-**Status:** DRAFT — awaiting approval before any code is written
-
----
-
-## 0. Architecture & Laws Compliance
-
-| Rule | How This Plan Satisfies It |
-|---|---|
-| **Plan Mode** | No code written until user explicitly approves this document. |
-| **DRY** | Req 3 explicitly refactors `on_send` to avoid duplicating the HTTP POST logic inside the new button callback. All chat dispatch flows through one shared `process_chat_message()` function. |
-| **Actionable Observability** | Req 2 replaces the silent SnackBar path with `show_error_dialog` carrying an exact remediation string. |
-| **Minimal stack** | No new packages. All changes use only existing Flet primitives. |
-| **Credentials / Security** | No change to credential storage paths. |
-
-**New packages required:** None.
+**Status:** Implemented
+**Source:** `req.md` — three parts
+**Laws observed:** ARCHITECTURE.md (Strict Layered Architecture, Context Budgeting, Actionable Observability, Mathematical Precision, Security), CLAUDE.md (Plan Mode, MCP-first, no global state, keyring)
 
 ---
 
-## 1. Files Touched
+## Files to Create or Modify
 
-| # | File | Requirement(s) |
-|---|---|---|
-| 1 | `frontend/views/jira_settings.py` | Req 1 (reorder), Req 2 (validation) |
-| 2 | `frontend/main.py` | Req 3 (DRY refactor + Daily Summary button) |
+| # | Action | Path |
+|---|--------|------|
+| 1 | Modify | `frontend/main.py` |
+| 2 | Modify | `ARCHITECTURE.md` *(append new section — do NOT replace existing engineering laws)* |
+| 3 | Modify | `frontend/views/jira_settings.py` *(UX polish: label shortening, field reordering, validation expansion, SnackBar → `show_error_dialog` — see Part 4)* |
 
-**Files confirmed untouched:** `backend/`, `config/`, `tests/`, `requirements.txt`
-
----
-
-## 2. Req 1 — Reorder Settings Dialog (Credentials First)
-
-### 2.1 Current order in `_build_dialog_content()` (`jira_settings.py:373–413`)
-
-1. `ft.Card` — JQL Quick Import (jql_input + import_btn)  ← currently FIRST
-2. Divider
-3. "Filter Profile Name" label + `profile_name_field`
-4. Divider
-5. "Jira Personal Access Token" label + `pat_field`
-6. Divider
-7. "Jira Parent Link (required)" label + `parent_link_field`
-8. Divider
-9. "Current Saved Filters..." label + `saved_filters_col`
-10. Divider
-11. "Additional Filter Rows" label + `filter_rows_column`
-12. `ft.TextButton("+ Add Filter")`
-
-### 2.2 New order (target)
-
-1. "Profile Name \*" label + `profile_name_field`
-2. Divider
-3. "Jira PAT \*" label + `pat_field`
-4. Divider
-5. "Jira Parent Link \*" label + `parent_link_field`
-6. Divider
-7. `ft.Card` — JQL Quick Import (unchanged card content)
-8. Divider
-9. "Current Saved Filters..." label + `saved_filters_col`
-10. Divider
-11. "Additional Filter Rows" label + `filter_rows_column`
-12. `ft.TextButton("+ Add Filter")`
-
-### 2.3 Label changes
-
-Two layers carry the field label — the `ft.Text` section heading inside `_build_dialog_content` AND the `label=` on the `ft.TextField` widget itself (defined higher up in `open_jira_settings_dialog`). Both must be updated.
-
-| Widget | Current `label` | New `label` |
-|---|---|---|
-| `profile_name_field` (`jira_settings.py:52`) | `"Filter Profile Name"` | `"Profile Name *"` |
-| `pat_field` (`jira_settings.py:60`) | `"Jira Personal Access Token"` | `"Jira PAT *"` |
-| `parent_link_field` (`jira_settings.py:82`) | `"Jira Parent Link (required)"` | `"Jira Parent Link *"` |
-
-And the `ft.Text` section headings in `_build_dialog_content` updated to match: `"Profile Name *"`, `"Jira PAT *"`, `"Jira Parent Link *"`.
-
-### 2.4 Implementation notes
-
-- Only the `controls=[]` list ordering and the three label strings change in `_build_dialog_content`. The function signature is unchanged.
-- No change to widget creation logic, event handlers, or state management.
+No new packages required. No backend changes required.
 
 ---
 
-## 3. Req 2 — Mandatory Field Validation in `on_save`
+## Critical Conflict: `ARCHITECTURE.md` Already Exists
 
-### 3.1 Current state (`jira_settings.py:243–278`)
+`ARCHITECTURE.md` at the project root currently contains the **5 Engineering Laws** that the jira-planner skill reads as its constraint document. Overwriting it would destroy those rules.
 
-`on_save` currently:
-1. Checks only `parent_link_field.value.strip()` — shows a `ft.SnackBar` on failure.
-2. Does **not** check `profile_name_field` or `pat_field`.
-3. Allows saving with empty profile name and/or empty PAT.
-
-### 3.2 Target state
-
-Replace the single `parent_link` SnackBar check with a combined validation block at the very top of `on_save`, before any state mutation:
-
-```
-if any of (profile_name_field, pat_field, parent_link_field) is empty/whitespace:
-    call show_error_dialog(page, <exact message below>)
-    return   ← halt completely, no state written
-```
-
-**Exact error message string (verbatim from req.md):**
-```
-Validation Error: Missing Required Fields.\n\nRemediation: You must provide a Profile Name, Jira PAT, and Parent Link before saving.
-```
-
-### 3.3 Implementation notes
-
-- The existing `ft.SnackBar` block (lines 244–252) is **removed** and replaced by the new combined check.
-- The existing `try/except` block that wraps state writes remains in place — the validation block sits above it, outside the try.
-- The check uses `.strip()` to reject whitespace-only values.
-- `show_error_dialog` is already defined in the same file and is already imported where needed — no new imports required.
-
-### 3.4 Resulting `on_save` structure
-
-```
-def on_save(e):
-    # --- NEW: Combined required-field validation ---
-    if not profile_name_field.value.strip() \
-       or not pat_field.value.strip() \
-       or not parent_link_field.value.strip():
-        show_error_dialog(page,
-            "Validation Error: Missing Required Fields.\n\n"
-            "Remediation: You must provide a Profile Name, Jira PAT, and "
-            "Parent Link before saving.")
-        return
-    # --- EXISTING: filter-row validation (unchanged) ---
-    if filter_rows and not validate_filters():
-        return
-    # --- EXISTING: try/except state-write block (unchanged) ---
-    try:
-        ...
-    except Exception as exc:
-        ...
-```
+**Resolution:** Append a new `## Project Structure` section to the existing file rather than replacing it. All existing law content is preserved verbatim.
 
 ---
 
-## 4. Req 3 — "Generate Daily Summary" Quick-Action Button
+## Part 1 — Move "Compact" Button to Input Row
 
-### 4.1 Step A — Refactor `on_send` into `process_chat_message`
+**File:** `frontend/main.py`
 
-**Current `on_send` shape (`frontend/main.py:103–166`):**
+### Change 1a — Remove `compact_btn` from the header `ft.Row`
 
+**Location:** Line 255
+
+Current:
 ```
-async def on_send(e):
-    text = input_field.value.strip()
-    if not text: return
-    input_field.value = ""
-    input_field.disabled = True
-    send_btn.disabled = True
-    message_list.controls.append(_make_bubble(text, "user"))
-    thinking = ft.Text("Thinking...", ...)
-    message_list.controls.append(thinking)
-    page.update()
-    <build active_filters from app_state>
-    try:
-        <HTTP POST to /chat>
-        <handle 200 or non-200>
-    except:
-        <handle connection error>
-    input_field.disabled = False
-    send_btn.disabled = False
-    input_field.focus()
-    page.update()
+ft.Row([title_text, summary_btn, compact_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
 ```
 
-**Target: extract a new shared function**
-
-```python
-async def process_chat_message(prompt_text: str) -> None:
-    """Core dispatch: show user bubble, call backend, render reply."""
-    input_field.disabled = True
-    send_btn.disabled = True
-    message_list.controls.append(_make_bubble(prompt_text, "user"))
-    thinking = ft.Text("Thinking...", italic=True, color=ft.Colors.GREY_400)
-    message_list.controls.append(thinking)
-    page.update()
-
-    selected_keys = app_state.get("selected_filter_keys", [])
-    active_filters = (
-        {k: v for k, v in app_state["filters"].items() if k in selected_keys}
-        if selected_keys
-        else app_state["filters"]
-    )
-
-    try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            r = await client.post(
-                "http://localhost:8000/chat",
-                json={
-                    "prompt":               prompt_text,
-                    "thread_id":            thread_id,
-                    "prefixes":             [app_state["jira_env"]] if app_state["jira_env"] else [],
-                    "mode":                 "TEAM",
-                    "parent_link":          app_state["parent_link"],
-                    "filters":              active_filters,
-                    "selected_filter_keys": selected_keys,
-                },
-            )
-        if r.status_code == 200:
-            reply = r.json()["response"]
-            message_list.controls.remove(thinking)
-            message_list.controls.append(_make_bubble(reply, "assistant"))
-        else:
-            detail = r.json().get("detail", r.text)
-            message_list.controls.remove(thinking)
-            _status_hints: dict[int, str] = {
-                401: "Token expired or invalid — update your PAT in Settings → Jira Personal Access Token.",
-                403: "Access denied — verify your Jira role has permission to read these issues.",
-                404: "Endpoint not found — ensure the backend is the latest version.",
-                500: "Backend internal error — check the terminal log for a Python traceback.",
-            }
-            hint = _status_hints.get(r.status_code, "Check the terminal log for details.")
-            print(f"[on_send] HTTP {r.status_code}: {detail}")
-            show_error_dialog(page, f"Error {r.status_code}: {detail}\n\nRemediation: {hint}")
-    except Exception as exc:
-        message_list.controls.remove(thinking)
-        print(f"[on_send] Exception: {exc}")
-        show_error_dialog(
-            page,
-            f"Connection error: {exc}\n\n"
-            "Remediation: start the backend with:\n"
-            "  uvicorn backend.main:app --reload --port 8000",
-        )
-
-    input_field.disabled = False
-    send_btn.disabled = False
-    input_field.focus()
-    page.update()
+New:
+```
+ft.Row([title_text, summary_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
 ```
 
-### 4.2 Step B — Slim down `on_send`
+### Change 1b — Inject `compact_btn` into the input `ft.Row`
 
-```python
-async def on_send(e: ft.ControlEvent | None = None) -> None:
-    text = input_field.value.strip()
-    if not text:
-        return
-    input_field.value = ""
-    await process_chat_message(text)
+**Location:** Line 257
+
+Current:
+```
+ft.Row([input_field, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),
 ```
 
-`on_send` is now a thin wrapper — read, guard, clear, delegate.
-
-### 4.3 Step C — Create the button
-
-```python
-summary_btn = ft.ElevatedButton(
-    "Generate Daily Summary",
-    icon=ft.Icons.AUTO_AWESOME,
-    on_click=on_daily_summary,
-)
+New:
+```
+ft.Row([input_field, compact_btn, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),
 ```
 
-**Placement:** inside the header `ft.Row` alongside `title_text` and `settings_btn`:
+**Result:** `compact_btn` sits immediately left of `send_btn` in the bottom input bar. The button widget itself (defined at lines 226–230) is unchanged.
 
-```python
-ft.Row(
-    [title_text, summary_btn, settings_btn],
-    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-)
+---
+
+## Part 2 — Guardrail for "Generate Daily Summary"
+
+**File:** `frontend/main.py`
+
+**Location:** `on_daily_summary` function, lines 170–173
+
+Current function body:
 ```
-
-This keeps the button visually anchored to the app chrome without disrupting the chat input row.
-
-### 4.4 Step D — The trigger handler
-
-```python
 async def on_daily_summary(e: ft.ControlEvent) -> None:
     await process_chat_message(
         "Please generate a detailed daily summary based on my currently active Jira filters."
     )
 ```
 
-This is an `async def` so Flet can await it. It makes exactly one call to `process_chat_message` — the HTTP POST logic is **not** duplicated.
+New function body (guard inserted at the very top, before any network call):
+```
+async def on_daily_summary(e: ft.ControlEvent) -> None:
+    if not app_state.get("filters"):
+        show_error_dialog(
+            page,
+            "Cannot generate summary: No Jira filters configured.\n\n"
+            "Remediation: Please open Settings (the gear icon) and import a JQL "
+            "string or add a filter before requesting a summary."
+        )
+        return
+    await process_chat_message(
+        "Please generate a detailed daily summary based on my currently active Jira filters."
+    )
+```
+
+**Law compliance (Actionable Observability):** The error dialog provides a specific remediation step. No backend call is made when the guard fires — zero API cost.
+
+**Context Budgeting:** N/A — no Jira API call is made when the guard halts execution. Downstream, the existing `process_chat_message` path already passes only selected filter keys to `/chat`, not raw Jira payloads.
 
 ---
 
-## 5. Data Flow (post-change)
+## Part 3 — Append Project Structure to `ARCHITECTURE.md`
+
+**File:** `ARCHITECTURE.md`
+
+A new section will be appended after the existing 5-rule law block. The codebase scan (performed above) identified the following files:
 
 ```
-User types and presses Send / Enter
-  └─► on_send(e)
-        └─► strips & guards text
-        └─► clears input_field.value
-        └─► await process_chat_message(text)
-              └─► disables input_field + send_btn
-              └─► appends user bubble + "Thinking..."
-              └─► POST /chat
-              └─► appends reply or calls show_error_dialog
-              └─► re-enables input_field + send_btn
-
-User clicks "Generate Daily Summary"
-  └─► on_daily_summary(e)
-        └─► await process_chat_message("Please generate a detailed daily summary...")
-              └─► (same shared path as above)
+AI Chatbot/
+├── ARCHITECTURE.md          ← Engineering laws + project structure (this file)
+├── CLAUDE.md                ← Claude Code guidance and workflow rules
+├── feature_plan.md          ← Current implementation plan (regenerated each session)
+├── req.md                   ← Incoming feature requirements
+├── requirements.txt         ← Python dependency manifest
+├── run_harness.py           ← Dev harness for end-to-end test runs
+│
+├── frontend/
+│   ├── main.py              ← Flet app entry point; starts backend in-process, owns all UI state
+│   ├── __init__.py
+│   └── views/
+│       ├── chat.py          ← (reserved) — chat view decomposition target
+│       ├── config.py        ← Provider configuration dialog
+│       ├── jira_settings.py ← Jira filter import dialog and error-dialog helper
+│       └── __init__.py
+│
+├── backend/
+│   ├── main.py              ← FastAPI app; /chat, /compact, /health, /api/filters/parse-jql routes
+│   ├── __init__.py
+│   ├── agent/
+│   │   ├── graph.py         ← LangGraph graph definition and compilation (MemorySaver checkpointer)
+│   │   ├── llm_factory.py   ← Builds the LLM client from provider credentials at runtime
+│   │   ├── nodes.py         ← LangGraph node functions (llm_call, orchestrator_fetch, route_after_llm)
+│   │   ├── state.py         ← AgentState TypedDict (extends MessagesState)
+│   │   └── __init__.py
+│   └── utils/
+│       ├── jql_parser.py    ← Parses raw JQL strings into structured filter dicts (Context Budgeting)
+│       └── __init__.py
+│
+├── config/
+│   ├── providers.py         ← Credential read/write via keyring (Windows Credential Manager)
+│   └── __init__.py
+│
+├── tools/
+│   ├── jira_tool.py         ← MCP tool: fetches Jira issues and returns only parsed fields
+│   ├── mock_jira_mcp.py     ← Stub MCP server for local dev/testing without live Jira
+│   └── __init__.py
+│
+└── tests/
+    ├── test_ping.py         ← Health-check integration test
+    └── test_providers.py    ← Credential store unit tests
 ```
+
+### Data Flow Summary
+
+**Flet → FastAPI:** `frontend/main.py` communicates with the backend exclusively over `localhost:8000` HTTP using `httpx`. It never imports backend modules for data access (exception: the in-process uvicorn launch at startup to avoid fork-bombing a packaged `.exe`).
+
+**FastAPI → LangGraph → MCP:** `/chat` passes the user prompt and filter state into the compiled LangGraph graph. The graph's nodes invoke Jira tool calls via MCP (`tools/jira_tool.py`). `jql_parser.py` and the tool layer ensure only extracted fields (`issue_key`, `summary`, `status`, `assignee`) reach the LLM — never raw Jira JSON payloads.
 
 ---
 
-## 6. Verification Checklist
+## Part 4 — Jira Settings UX Polish *(retroactively documented — committed in 809cd0a)*
 
-### Req 1 — Settings reorder
-- [ ] `_build_dialog_content` lists `profile_name_field` before `pat_field` before `parent_link_field` before the JQL `ft.Card`
-- [ ] `profile_name_field.label` is `"Profile Name *"`
-- [ ] `pat_field.label` is `"Jira PAT *"`
-- [ ] `parent_link_field.label` is `"Jira Parent Link *"`
-- [ ] `ft.Text` section headings in `_build_dialog_content` match the new labels
+**File:** `frontend/views/jira_settings.py`
 
-### Req 2 — Mandatory field validation
-- [ ] `on_save` checks all three fields (profile_name, pat, parent_link) before any state write
-- [ ] Any empty/whitespace field triggers `show_error_dialog` with the exact verbatim message from req.md
-- [ ] `on_save` returns immediately after showing the dialog (no partial state writes)
-- [ ] The old `ft.SnackBar` parent_link-only check is removed
-- [ ] `filter_rows` validation remains in place, below the new combined check
+### Change 4a — Label shortening
+Field labels renamed for visual brevity and to surface the required-field asterisk:
+- `"Filter Profile Name"` → `"Profile Name *"`
+- `"Jira Personal Access Token"` → `"Jira PAT *"`
+- `"Jira Parent Link (required)"` → `"Jira Parent Link *"`
 
-### Req 3 — Daily Summary button
-- [ ] `process_chat_message(prompt_text: str)` defined inside `main()`, contains all HTTP logic
-- [ ] `on_send` is a thin 4-line wrapper: strip, guard, clear, delegate
-- [ ] `summary_btn = ft.ElevatedButton("Generate Daily Summary", icon=ft.Icons.AUTO_AWESOME)` exists
-- [ ] `on_daily_summary` calls `process_chat_message` with the exact prompt string from req.md
-- [ ] HTTP POST logic appears exactly **once** in `frontend/main.py`
-- [ ] No new packages added
+### Change 4b — Field reordering in `_build_dialog_content`
+Credential fields (Profile Name, PAT, Parent Link) moved to the **top** of the dialog, before the JQL import card. Previously they appeared below the card, making required fields harder to locate.
+
+### Change 4c — `on_save` validation expanded
+Guard widened from checking only `parent_link_field` to checking all three required fields (profile name, PAT, parent link). Missing any one of these produces an actionable error dialog.
+
+### Change 4d — SnackBar → `show_error_dialog`
+Replaced inline `page.open(ft.SnackBar(...))` with the shared `show_error_dialog(page, ...)` helper, consistent with the rest of the UI. The dialog provides a specific remediation string (Law: Actionable Observability).
+
+---
+
+## What This Plan Does NOT Change
+
+- `backend/main.py` — no route changes
+- `backend/agent/` — no graph, node, or state changes
+- `backend/utils/` — no changes
+- `config/providers.py` — no changes
+- `tools/` — no changes
+- `requirements.txt` — no new packages
+- `tests/` — no test changes
+
+**All parts implemented and committed.**
