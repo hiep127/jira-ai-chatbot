@@ -13,8 +13,9 @@
 | 1 | Modify | `frontend/main.py` |
 | 2 | Modify | `ARCHITECTURE.md` *(append new section — do NOT replace existing engineering laws)* |
 | 3 | Modify | `frontend/views/jira_settings.py` *(UX polish: label shortening, field reordering, validation expansion, SnackBar → `show_error_dialog` — see Part 4)* |
+| 4 | Modify | `backend/main.py` *(add `/compact` POST route with `CompactRequest`/`CompactResponse` Pydantic models and LangGraph state-mutation logic)* |
 
-No new packages required. No backend changes required.
+No new packages required.
 
 ---
 
@@ -180,7 +181,6 @@ Replaced inline `page.open(ft.SnackBar(...))` with the shared `show_error_dialog
 
 ## What This Plan Does NOT Change
 
-- `backend/main.py` — no route changes
 - `backend/agent/` — no graph, node, or state changes
 - `backend/utils/` — no changes
 - `config/providers.py` — no changes

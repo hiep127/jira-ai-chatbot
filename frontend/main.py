@@ -188,6 +188,8 @@ async def main(page: ft.Page) -> None:
         message_list.controls.append(compressing_bubble)
         page.update()
 
+        bubble_removed = False
+
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post(
@@ -195,6 +197,7 @@ async def main(page: ft.Page) -> None:
                     json={"thread_id": thread_id},
                 )
             message_list.controls.remove(compressing_bubble)
+            bubble_removed = True
 
             if r.status_code == 200:
                 data = r.json()
@@ -213,10 +216,12 @@ async def main(page: ft.Page) -> None:
                 show_error_dialog(page, f"Compact failed ({r.status_code}): {detail} If this persists, check the application logs for more detail.")
 
         except httpx.ConnectError:
-            message_list.controls.remove(compressing_bubble)
+            if not bubble_removed:
+                message_list.controls.remove(compressing_bubble)
             show_error_dialog(page, "Could not reach the backend. Ensure the server is running.")
         except Exception as exc:
-            message_list.controls.remove(compressing_bubble)
+            if not bubble_removed:
+                message_list.controls.remove(compressing_bubble)
             show_error_dialog(page, f"Compact request failed: {exc}. If this persists, check the application logs for more detail.")
 
         input_field.disabled = False
