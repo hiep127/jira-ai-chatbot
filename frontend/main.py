@@ -82,49 +82,6 @@ async def main(page: ft.Page) -> None:
         if sidebar_col.page:
             sidebar_col.update()
 
-    def _open_github_auth_dialog() -> None:
-        async def on_open_terminal(e: ft.ControlEvent) -> None:
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    await client.post("http://localhost:8000/auth/github/spawn-terminal")
-            except Exception as exc:
-                show_error_dialog(page, f"Could not open terminal: {exc}")
-
-        async def on_refresh(e: ft.ControlEvent) -> None:
-            try:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    r = await client.get("http://localhost:8000/auth/github/status")
-                if r.json().get("authenticated"):
-                    auth_dlg.open = False
-                    page.update()
-                else:
-                    show_error_dialog(
-                        page,
-                        "Not yet authenticated. Complete 'gh auth login' in the terminal window, then click Refresh again.",
-                    )
-            except Exception as exc:
-                show_error_dialog(page, f"Status check failed: {exc}")
-
-        auth_dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Authentication Required", color=ft.Colors.ORANGE_400),
-            content=ft.Text(
-                "GitHub Copilot is not authenticated.\n\n"
-                "1. Click 'Open Terminal & Log In'.\n"
-                "2. Follow the prompts in the terminal window to authenticate.\n"
-                "3. Once the terminal says 'Logged in', return here.\n"
-                "4. Click 'Refresh / I'm Done' to verify and close this dialog."
-            ),
-            actions=[
-                ft.ElevatedButton("Open Terminal & Log In", on_click=on_open_terminal),
-                ft.TextButton("Refresh / I'm Done", on_click=on_refresh),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        page.overlay.append(auth_dlg)
-        auth_dlg.open = True
-        page.update()
-
     message_list = ft.ListView(expand=True, spacing=8, padding=ft.padding.all(10), auto_scroll=True)
 
     async def process_chat_message(prompt_text: str) -> None:
@@ -157,7 +114,14 @@ async def main(page: ft.Page) -> None:
                 message_list.controls.remove(thinking)
 
                 if r.status_code == 401 and "GitHub CLI" in detail:
-                    _open_github_auth_dialog()
+                    page.snack_bar = ft.SnackBar(
+                        ft.Text(
+                            "GitHub Copilot is not authenticated. "
+                            "Re-authenticate in Settings → Model Settings."
+                        ),
+                        bgcolor=ft.Colors.ORANGE_700,
+                    )
+                    page.snack_bar.open = True
                 else:
                     _status_hints: dict[int, str] = {
                         401: "Token expired or invalid — update your PAT in Settings → Jira Personal Access Token.",
@@ -271,10 +235,21 @@ async def main(page: ft.Page) -> None:
     )
 
     title_text = ft.Text("AI Agent", size=20, weight=ft.FontWeight.BOLD)
+
+    def on_settings(e: ft.ControlEvent) -> None:
+        try:
+            open_jira_settings_dialog(page, app_state, on_settings_saved=rebuild_sidebar)
+        except Exception as exc:
+            print(f"[on_settings] {exc}")
+            show_error_dialog(
+                page,
+                f"Failed to open Settings: {exc}\n\nRemediation: restart the application.",
+            )
+
     settings_btn = ft.IconButton(
         ft.Icons.SETTINGS,
         tooltip="Settings",
-        on_click=lambda e: open_jira_settings_dialog(page, app_state, on_settings_saved=rebuild_sidebar),
+        on_click=on_settings,
     )
 
     page.add(

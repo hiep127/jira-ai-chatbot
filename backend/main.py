@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -83,13 +84,14 @@ def health() -> dict[str, str]:
 
 
 @app.get("/auth/github/status")
-def github_auth_status() -> GitHubAuthStatusResponse:
+async def github_auth_status() -> GitHubAuthStatusResponse:
     from backend.utils.github_auth import get_local_github_token
-    return GitHubAuthStatusResponse(authenticated=get_local_github_token() is not None)
+    token = await asyncio.to_thread(get_local_github_token)
+    return GitHubAuthStatusResponse(authenticated=token is not None)
 
 
 @app.post("/auth/github/spawn-terminal")
-def spawn_github_terminal() -> GitHubSpawnTerminalResponse:
+async def spawn_github_terminal() -> GitHubSpawnTerminalResponse:
     try:
         from backend.utils.github_auth import spawn_windows_auth_terminal
         spawn_windows_auth_terminal()
@@ -103,15 +105,12 @@ def spawn_github_terminal() -> GitHubSpawnTerminalResponse:
 
 @app.post("/chat")
 async def chat(body: ChatRequest, request: Request) -> ChatResponse:
-    from config.providers import load_active_provider
     from backend.utils.github_auth import get_local_github_token
-    if load_active_provider() == "github_copilot" and get_local_github_token() is None:
+    token = await asyncio.to_thread(get_local_github_token)
+    if token is None:
         raise HTTPException(
             status_code=401,
-            detail=(
-                "GitHub CLI not authenticated. "
-                "Run 'gh auth login' to authenticate."
-            ),
+            detail="GitHub CLI not authenticated. Run 'gh auth login' to authenticate.",
         )
     try:
         result = await request.app.state.graph.ainvoke(

@@ -8,22 +8,7 @@ import flet as ft
 
 from config.providers import get_jira_pat, set_jira_pat
 from frontend.views.config import open_config_dialog
-
-
-def show_error_dialog(page: ft.Page, error_message: str) -> None:
-    def _close(ev: ft.ControlEvent) -> None:
-        err_dlg.open = False
-        page.update()
-
-    err_dlg = ft.AlertDialog(
-        modal=True,
-        title=ft.Text("Application Error", color=ft.Colors.RED),
-        content=ft.Text(str(error_message)),
-        actions=[ft.TextButton("OK", on_click=_close)],
-    )
-    page.overlay.append(err_dlg)
-    err_dlg.open = True
-    page.update()
+from frontend.views.dialogs import show_error_dialog
 
 
 def open_jira_settings_dialog(
@@ -131,7 +116,15 @@ def open_jira_settings_dialog(
         page.update()
 
     def open_model_config(e: ft.ControlEvent) -> None:
-        open_config_dialog(page)
+        try:
+            open_config_dialog(page)
+        except Exception as exc:
+            print(f"[open_model_config] {exc}")
+            show_error_dialog(
+                page,
+                f"Failed to open Model Settings: {exc}\n\n"
+                "Remediation: restart the application.",
+            )
 
     dialog = ft.AlertDialog(
         modal=True,

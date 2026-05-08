@@ -1,43 +1,38 @@
 from __future__ import annotations
 
 import flet as ft
+import httpx
 
-from config.providers import KEY_PROVIDERS, delete_key, load_key, save_active_provider, save_key
-
-_PROVIDER_LABELS: dict[str, str] = {
-    "openai": "OpenAI",
-    "anthropic": "Anthropic",
-    "azure": "Azure OpenAI",
-    "github_copilot": "GitHub Copilot SDK",
-}
+from config.providers import save_active_provider
+from frontend.views.dialogs import show_error_dialog
 
 
 def open_config_dialog(page: ft.Page) -> None:
     # --- Controls (defined first so all handlers can reference them) ---
-    provider_dropdown = ft.Dropdown(
-        label="Provider",
-        value="openai",
-        options=[
-            ft.dropdown.Option(key=k, text=v) for k, v in _PROVIDER_LABELS.items()
-        ],
-        width=300,
-    )
-    key_field = ft.TextField(
-        hint_text="Enter API key",
-        password=True,
-        can_reveal_password=True,
-        expand=True,
-    )
-    copilot_info = ft.Text(
-        "Authentication is handled automatically via your local\n"
-        "GitHub Copilot CLI. No API key is needed.",
+    copilot_status_ok = ft.Text(
+        "✅ GitHub Copilot is authenticated and ready.",
+        color=ft.Colors.GREEN,
         size=13,
-        italic=True,
         visible=False,
+    )
+    copilot_instructions = ft.Text(
+        "GitHub Copilot is not authenticated.\n\n"
+        "1. Click 'Open Terminal & Log In' below.\n"
+        "2. Follow the prompts to run 'gh auth login'.\n"
+        "3. Once complete, click 'Refresh' to verify.",
+        size=13,
+        visible=False,
+    )
+    open_terminal_btn = ft.ElevatedButton("Open Terminal & Log In", visible=False)
+    refresh_auth_btn  = ft.TextButton("Refresh", visible=False)
+
+    github_auth_container = ft.Column(
+        controls=[copilot_status_ok, copilot_instructions, open_terminal_btn, refresh_auth_btn],
+        spacing=8,
+        visible=True,
     )
     status_text = ft.Text("", size=12)
     save_btn = ft.ElevatedButton("Save")
-    clear_btn = ft.TextButton("Clear Key")
     close_btn = ft.TextButton("Close")
 
     # --- Helpers ---
@@ -45,62 +40,84 @@ def open_config_dialog(page: ft.Page) -> None:
         status_text.value = msg
         status_text.color = color or None
 
-    def refresh_for_provider(provider: str) -> None:
-        is_copilot = provider == "github_copilot"
-        key_field.visible = not is_copilot
-        copilot_info.visible = is_copilot
-        clear_btn.visible = not is_copilot
-        key_field.value = ""
-        if not is_copilot:
-            has_key = load_key(provider) is not None
-            set_status("Key is configured" if has_key else "No key stored")
-        else:
-            set_status("")
+    # --- Async helpers ---
+    async def _check_copilot_status() -> None:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get("http://localhost:8000/auth/github/status")
+            authenticated = r.json().get("authenticated", False)
+            if authenticated:
+                copilot_status_ok.visible    = True
+                copilot_instructions.visible = False
+                open_terminal_btn.visible    = False
+                refresh_auth_btn.visible     = False
+                set_status("Authenticated.", "green")
+            else:
+                copilot_status_ok.visible    = False
+                copilot_instructions.visible = True
+                open_terminal_btn.visible    = True
+                refresh_auth_btn.visible     = True
+                set_status("")
+        except Exception as exc:
+            set_status(
+                f"Status check failed: {exc}. "
+                "Remediation: ensure the backend is running on localhost:8000.",
+                "red",
+            )
+        page.update()
+
+    async def on_open_terminal(e: ft.ControlEvent) -> None:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post("http://localhost:8000/auth/github/spawn-terminal")
+        except Exception as exc:
+            set_status(
+                f"Could not open terminal: {exc}. "
+                "Remediation: ensure cmd.exe is accessible on this system.",
+                "red",
+            )
+            page.update()
+
+    async def on_refresh_auth(e: ft.ControlEvent) -> None:
+        set_status("Checking authentication…")
+        page.update()
+        await _check_copilot_status()
 
     # --- Event handlers ---
-    def on_provider_change(e: ft.ControlEvent) -> None:
-        refresh_for_provider(e.control.value)
-        page.update()
-
     def on_save(e: ft.ControlEvent) -> None:
-        provider = provider_dropdown.value
-        if provider in KEY_PROVIDERS:
-            key = key_field.value.strip()
-            if not key:
-                set_status("Key cannot be empty.", "red")
-                page.update()
-                return
-            save_key(provider, key)
-            save_active_provider(provider)
-            key_field.value = ""
-            set_status("Key saved.", "green")
-        else:
-            save_active_provider(provider)
+        save_btn.disabled = True
+        page.update()
+        try:
+            save_active_provider("github_copilot")
             set_status("GitHub Copilot set as active provider.", "green")
-        page.update()
-
-    def on_clear(e: ft.ControlEvent) -> None:
-        delete_key(provider_dropdown.value)
-        key_field.value = ""
-        set_status("Key removed.", "orange")
-        page.update()
+        except Exception as exc:
+            print(f"[on_save] {exc}")
+            show_error_dialog(
+                page,
+                f"Failed to save provider: {exc}\n\n"
+                "Remediation: ensure Windows Credential Manager is accessible "
+                "(Control Panel → Credential Manager → Windows Credentials).",
+            )
+        finally:
+            save_btn.disabled = False
+            page.update()
 
     # --- Assign handlers ---
-    provider_dropdown.on_change = on_provider_change
-    save_btn.on_click = on_save
-    clear_btn.on_click = on_clear
+    save_btn.on_click          = on_save
+    open_terminal_btn.on_click = on_open_terminal
+    refresh_auth_btn.on_click  = on_refresh_auth
 
     # --- Build dialog ---
     dialog = ft.AlertDialog(
         modal=True,
-        title=ft.Text("Configure AI Provider"),
+        title=ft.Text("Model Settings — GitHub Copilot"),
         content=ft.Column(
-            controls=[provider_dropdown, key_field, copilot_info, status_text],
+            controls=[github_auth_container, status_text],
             tight=True,
             spacing=12,
-            width=350,
+            width=380,
         ),
-        actions=[save_btn, clear_btn, close_btn],
+        actions=[save_btn, close_btn],
         actions_alignment=ft.MainAxisAlignment.END,
     )
 
@@ -111,7 +128,8 @@ def open_config_dialog(page: ft.Page) -> None:
     close_btn.on_click = on_close
 
     # --- Initialize state and show ---
-    refresh_for_provider("openai")
+    set_status("Checking authentication…")
     page.overlay.append(dialog)
     dialog.open = True
     page.update()
+    page.run_task(_check_copilot_status())
