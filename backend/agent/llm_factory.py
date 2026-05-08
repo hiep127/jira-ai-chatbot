@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import subprocess
 
+from langchain_core.language_models.chat_models import BaseChatModel
+
 from config.providers import load_active_provider, load_key
 
 
-def build_llm():
+def build_llm() -> BaseChatModel:
     """Instantiate the active provider's LangChain chat model.
 
     Called at request time so provider changes take effect without a restart.
@@ -34,6 +36,42 @@ def build_llm():
             api_key=token,
             base_url="https://api.githubcopilot.com",
             model="gpt-4o",
+        )
+
+    raise RuntimeError(
+        "No AI provider configured. Open ⚙ Settings to add your API key."
+    )
+
+
+def build_summarizer_llm() -> BaseChatModel:
+    """Cheaper/faster variant for high-fan-out sub-agent tasks.
+
+    Uses gpt-4o-mini / claude-haiku instead of the heavier orchestrator model
+    because sub-agents perform a constrained, repeatable extraction task.
+    """
+    provider = load_active_provider()
+
+    if provider == "openai":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(api_key=load_key("openai"), model="gpt-4o-mini")
+
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(api_key=load_key("anthropic"), model="claude-haiku-4-5-20251001")
+
+    if provider == "azure":
+        raise RuntimeError(
+            "Azure requires an endpoint URL that is not yet configurable. "
+            "Coming in Phase 4 — use OpenAI or Anthropic for now."
+        )
+
+    if provider == "github_copilot":
+        token = _get_copilot_token()
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            api_key=token,
+            base_url="https://api.githubcopilot.com",
+            model="gpt-4o-mini",
         )
 
     raise RuntimeError(

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated
+from typing import Annotated, TypedDict
 
 from langgraph.graph import MessagesState
+
+
+class TicketState(TypedDict):
+    ticket_key: str
 
 
 class AgentState(MessagesState):
@@ -11,9 +15,9 @@ class AgentState(MessagesState):
     mode: str
     tickets: list[dict]
     summaries: Annotated[list[str], operator.add]
+    ticket_summaries: Annotated[list[str], operator.add]
     parent_link: str
-    filters: dict[str, list[str]]
-    selected_filter_keys: list[str]
+    custom_jql: str
 
 
 class SummarizerState(MessagesState):

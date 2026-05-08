@@ -51,7 +51,7 @@ PREFIX_TO_INSTANCE = {
     "C2BST": "SPAWS", "C2LST": "SPAWS", "SPAWS": "SPAWS", "LGE": "LGE",
 }
 
-def get_jira_client(ticket_key: str = None, prefix: str = None):
+def get_jira_client(ticket_key: str | None = None, prefix: str | None = None) -> JIRA:
     """Factory: Selects the correct JIRA instance based on ticket prefix."""
     proj_prefix = prefix or (ticket_key.split('-')[0].upper() if ticket_key else "DEFAULT")
     instance_key = PREFIX_TO_INSTANCE.get(proj_prefix, "DEFAULT")
@@ -70,6 +70,10 @@ class BatchScanArgs(BaseModel):
     prefixes: list[str] = Field(default=["SPAWS", "LGE"], description="Profiles to scan.")
     mode: str = Field(default="TEAM", description="'TEAM' or 'PERSONAL'")
     sort_by_age: bool = Field(default=True, description="True for oldest first.")
+    custom_jql: str = Field(
+        default="",
+        description="Raw JQL string provided by the user. When non-empty, used as-is for all scanned prefixes; per-profile configured filters are ignored."
+    )
 
 class TicketMetadataArgs(BaseModel):
     ticket_key: str = Field(..., description="The Jira ticket key.")
@@ -119,12 +123,15 @@ def get_tickets_by_batch(args: BatchScanArgs) -> str:
 
             try:
                 jira = get_jira_client(prefix=prefix)
-                jql_base = config["filters"].get(args.mode.upper())
-                
-                if args.mode.upper() == "TEAM" and not jql_base:
-                    jql_base = config["filters"].get("PERSONAL")
-                
-                jql = f"{jql_base} {order_clause}"
+
+                if args.custom_jql:
+                    jql = args.custom_jql
+                else:
+                    jql_base = config["filters"].get(args.mode.upper())
+                    if args.mode.upper() == "TEAM" and not jql_base:
+                        jql_base = config["filters"].get("PERSONAL")
+                    jql = f"{jql_base} {order_clause}"
+
                 issues = jira.search_issues(jql, maxResults=30)
                 
                 all_results[prefix] = [
@@ -152,6 +159,7 @@ def fetch_ticket_metadata(args: TicketMetadataArgs) -> str:
             "key": issue.key,
             "status": issue.fields.status.name,
             "summary": issue.fields.summary,
+            "assignee": getattr(issue.fields.assignee, "displayName", "Unassigned"),
             "description": issue.fields.description or "No description.",
             "comments": [{"author": c.author.displayName, "body": c.body, "date": c.created} for c in recent]
         }

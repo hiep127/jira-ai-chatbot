@@ -50,18 +50,17 @@ async def main(page: ft.Page) -> None:
     thread_id = str(uuid.uuid4())
 
     app_state: dict[str, Any] = {
-        "filter_profile_name":  "",
-        "jira_env":             "",
-        "parent_link":          "",
-        "filters":              {},
-        "selected_filter_keys": [],
+        "filter_profile_name": "",
+        "jira_env":            "",
+        "parent_link":         "",
+        "custom_jql":          "",
     }
 
     sidebar_col = ft.Column(
         controls=[
-            ft.Text("Active Filters", weight=ft.FontWeight.BOLD, size=14),
+            ft.Text("Active Query", weight=ft.FontWeight.BOLD, size=14),
             ft.Divider(),
-            ft.Text("No filters saved.", italic=True, color=ft.Colors.GREY_500, size=12),
+            ft.Text("No JQL configured.", italic=True, color=ft.Colors.GREY_500, size=12),
         ],
         width=220,
         spacing=4,
@@ -69,32 +68,17 @@ async def main(page: ft.Page) -> None:
 
     def rebuild_sidebar() -> None:
         sidebar_col.controls.clear()
-        sidebar_col.controls.append(ft.Text("Active Filters", weight=ft.FontWeight.BOLD, size=14))
+        sidebar_col.controls.append(ft.Text("Active Query", weight=ft.FontWeight.BOLD, size=14))
         sidebar_col.controls.append(ft.Divider())
-        if not app_state["filters"]:
+        jql = app_state.get("custom_jql", "")
+        if jql:
             sidebar_col.controls.append(
-                ft.Text("No filters saved.", italic=True, color=ft.Colors.GREY_500, size=12)
+                ft.Text(jql, size=11, color=ft.Colors.GREY_300, selectable=True)
             )
         else:
-            for key in app_state["filters"]:
-                is_checked = (
-                    key in app_state["selected_filter_keys"]
-                    if app_state["selected_filter_keys"]
-                    else True
-                )
-
-                def _on_cb(ev: ft.ControlEvent, k: str = key) -> None:
-                    if ev.control.value:
-                        if k not in app_state["selected_filter_keys"]:
-                            app_state["selected_filter_keys"].append(k)
-                    else:
-                        app_state["selected_filter_keys"] = [
-                            x for x in app_state["selected_filter_keys"] if x != k
-                        ]
-
-                sidebar_col.controls.append(
-                    ft.Checkbox(label=key, value=is_checked, on_change=_on_cb)
-                )
+            sidebar_col.controls.append(
+                ft.Text("No JQL configured.", italic=True, color=ft.Colors.GREY_500, size=12)
+            )
         if sidebar_col.page:
             sidebar_col.update()
 
@@ -108,25 +92,17 @@ async def main(page: ft.Page) -> None:
         message_list.controls.append(thinking)
         page.update()
 
-        selected_keys = app_state.get("selected_filter_keys", [])
-        active_filters = (
-            {k: v for k, v in app_state["filters"].items() if k in selected_keys}
-            if selected_keys
-            else app_state["filters"]
-        )
-
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 r = await client.post(
                     "http://localhost:8000/chat",
                     json={
-                        "prompt":               prompt_text,
-                        "thread_id":            thread_id,
-                        "prefixes":             [app_state["jira_env"]] if app_state["jira_env"] else [],
-                        "mode":                 "TEAM",
-                        "parent_link":          app_state["parent_link"],
-                        "filters":              active_filters,
-                        "selected_filter_keys": selected_keys,
+                        "prompt":      prompt_text,
+                        "thread_id":   thread_id,
+                        "prefixes":    [app_state["jira_env"]] if app_state["jira_env"] else [],
+                        "mode":        "TEAM",
+                        "parent_link": app_state["parent_link"],
+                        "custom_jql":  app_state.get("custom_jql", ""),
                     },
                 )
             if r.status_code == 200:
@@ -168,12 +144,12 @@ async def main(page: ft.Page) -> None:
         await process_chat_message(text)
 
     async def on_daily_summary(e: ft.ControlEvent) -> None:
-        if not app_state.get("filters"):
+        if not app_state.get("custom_jql"):
             show_error_dialog(
                 page,
-                "Cannot generate summary: No Jira filters configured.\n\n"
-                "Remediation: Please open Settings (the gear icon) and import a JQL "
-                "string or add a filter before requesting a summary."
+                "Cannot generate summary: No JQL query configured.\n\n"
+                "Remediation: Please open Settings (the gear icon) and enter a "
+                "Custom JQL Query before requesting a summary."
             )
             return
         await process_chat_message(

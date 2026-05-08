@@ -1,59 +1,32 @@
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from backend.agent.nodes import (
-    dispatch_to_summarizer,
-    extract_summary_node,
+    make_aggregate_and_report_node,
+    make_discovery_and_dispatch_node,
     make_llm_node,
-    make_orchestrator_compile_node,
-    make_orchestrator_fetch_node,
-    make_summarizer_node,
-    parse_tickets_node,
-    route_after_compile,
+    make_summarizer_daily_node,
     route_after_llm,
-    route_after_orchestrator_fetch,
-    route_after_summarizer,
 )
-from backend.agent.state import AgentState, SummarizerState
+from backend.agent.state import AgentState
 
 
-def _build_summarizer_subgraph(fetch_tool):
-    """Per-ticket summarizer: fetch metadata → synthesize Pulse → extract."""
-    sg = StateGraph(SummarizerState)
-
-    sg.add_node("summarizer_llm", make_summarizer_node(fetch_tool))
-    sg.add_node("summarizer_tools", ToolNode([fetch_tool]))
-    sg.add_node("extract_summary", extract_summary_node)
-
-    sg.add_edge(START, "summarizer_llm")
-    sg.add_conditional_edges(
-        "summarizer_llm",
-        route_after_summarizer,
-        {"summarizer_tools": "summarizer_tools", "extract_summary": "extract_summary"},
-    )
-    sg.add_edge("summarizer_tools", "summarizer_llm")
-    sg.add_edge("extract_summary", END)
-
-    return sg.compile()
-
-
-def build_graph(tools: list):
+def build_graph(tools: list[Any]) -> Any:
     """Build and compile the agent graph.
 
     Full orchestrator flow (when all three MCP tools are present):
         START
-          → orchestrator_fetch  (calls get_tickets_by_batch)
-          → orchestrator_tools  (executes the batch fetch)
-          → parse_tickets       (extracts flat ticket list → state.tickets)
-          → [Send fan-out] summarizer × N  (one per ticket, parallel)
-          → orchestrator_compile (builds High-Density table, calls save_summary_to_linux)
-          → save_tools          (executes the save call)
+          → discovery_and_dispatch   (Python: batch fetch + CCC filter → Send fan-out)
+          → summarizer_daily × N     (LLM + fetch_tool, parallel)
+          → aggregate_and_report     (Python: filter + build Markdown table + save)
           → END
 
-    Fallback (no tools or missing critical tools): simple single-LLM loop.
+    Fallback (missing critical tools): simple single-LLM loop.
     """
     tools_by_name = {t.name: t for t in tools}
     batch_tool = tools_by_name.get("get_tickets_by_batch")
@@ -72,35 +45,29 @@ def build_graph(tools: list):
         graph.add_edge(START, "llm")
         return graph.compile(checkpointer=MemorySaver())
 
-    summarizer_subgraph = _build_summarizer_subgraph(metadata_tool)
-
     graph = StateGraph(AgentState)
 
-    graph.add_node("orchestrator_fetch", make_orchestrator_fetch_node(batch_tool))
-    graph.add_node("orchestrator_tools", ToolNode([batch_tool]))
-    graph.add_node("parse_tickets", parse_tickets_node)
-    graph.add_node("summarizer", summarizer_subgraph)
-    graph.add_node("orchestrator_compile", make_orchestrator_compile_node(save_tool))
-    graph.add_node("save_tools", ToolNode([save_tool]))
+    graph.add_node("discovery_and_dispatch",
+                   make_discovery_and_dispatch_node(batch_tool))
+    graph.add_node("summarizer_daily",
+                   make_summarizer_daily_node(metadata_tool))
+    graph.add_node("aggregate_and_report",
+                   make_aggregate_and_report_node(save_tool))
 
-    graph.add_edge(START, "orchestrator_fetch")
+    graph.add_edge(START, "discovery_and_dispatch")
+
+    # discovery_and_dispatch returns either:
+    #   (a) list[Send] → LangGraph fans out; routing fn is NOT called
+    #   (b) plain dict (error/empty) → routing fn is called; go to aggregate
+    def route_after_dispatch(state: AgentState) -> str:
+        return "aggregate_and_report"
+
     graph.add_conditional_edges(
-        "orchestrator_fetch",
-        route_after_orchestrator_fetch,
-        {"orchestrator_tools": "orchestrator_tools", END: END},
+        "discovery_and_dispatch",
+        route_after_dispatch,
+        ["summarizer_daily", "aggregate_and_report"],
     )
-    graph.add_edge("orchestrator_tools", "parse_tickets")
-    graph.add_conditional_edges(
-        "parse_tickets",
-        dispatch_to_summarizer,
-        ["summarizer"],
-    )
-    graph.add_edge("summarizer", "orchestrator_compile")
-    graph.add_conditional_edges(
-        "orchestrator_compile",
-        route_after_compile,
-        {"save_tools": "save_tools", END: END},
-    )
-    graph.add_edge("save_tools", END)
+    graph.add_edge("summarizer_daily", "aggregate_and_report")
+    graph.add_edge("aggregate_and_report", END)
 
     return graph.compile(checkpointer=MemorySaver())

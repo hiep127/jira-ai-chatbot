@@ -11,7 +11,6 @@ from pydantic import BaseModel
 
 from backend.agent.graph import build_graph
 from backend.agent.llm_factory import build_llm
-from backend.utils.jql_parser import parse_jql as _parse_jql
 
 logger = logging.getLogger(__name__)
 
@@ -31,27 +30,12 @@ class ChatRequest(BaseModel):
     prefixes: list[str] = []
     mode: str = "TEAM"
     parent_link: str = ""
-    filters: dict[str, list[str]] = {}
-    selected_filter_keys: list[str] = []
+    custom_jql: str = ""
 
 
 class ChatResponse(BaseModel):
     response: str
     thread_id: str
-
-
-class JQLParseRequest(BaseModel):
-    jql: str
-
-
-class FilterRow(BaseModel):
-    field: str
-    operator: str
-    value: list[str]
-
-
-class JQLParseResponse(BaseModel):
-    rows: list[FilterRow]
 
 
 @asynccontextmanager
@@ -80,12 +64,12 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/ping")
-def ping():
+def ping() -> dict[str, str]:
     return {"status": "ok", "message": "pong"}
 
 
 @app.get("/health")
-def health():
+def health() -> dict[str, str]:
     return {"status": "healthy"}
 
 
@@ -99,9 +83,9 @@ async def chat(body: ChatRequest, request: Request) -> ChatResponse:
                 "mode":                 body.mode,
                 "tickets":              [],
                 "summaries":            [],
+                "ticket_summaries":     [],
                 "parent_link":          body.parent_link,
-                "filters":              body.filters,
-                "selected_filter_keys": body.selected_filter_keys,
+                "custom_jql":           body.custom_jql,
             },
             config={"configurable": {"thread_id": body.thread_id}},
         )
@@ -167,12 +151,3 @@ async def compact(body: CompactRequest, request: Request) -> CompactResponse:
         )
 
     return CompactResponse(status="success", message="Context compacted.")
-
-
-@app.post("/api/filters/parse-jql", response_model=JQLParseResponse)
-async def parse_jql_endpoint(payload: JQLParseRequest) -> JQLParseResponse:
-    try:
-        rows = _parse_jql(payload.jql.strip())
-        return JQLParseResponse(rows=[FilterRow(**r) for r in rows])
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))

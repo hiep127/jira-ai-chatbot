@@ -1,43 +1,24 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+from typing import Any, Callable
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END
 from langgraph.types import Send
 
-from backend.agent.llm_factory import build_llm
+from backend.agent.llm_factory import build_llm, build_summarizer_llm
+from backend.agent.state import TicketState
 
 MAX_TOOL_ROUNDS = 5
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
-# System prompts (sourced from agents/backlog-summary.agent.md)
+# System prompts
 # ---------------------------------------------------------------------------
-
-_ORCHESTRATOR_FETCH_PROMPT = """\
-You are the Global Backlog Orchestrator.
-Your only task right now is to call get_tickets_by_batch with the prefixes and \
-mode you have been given. Call the tool immediately — do not write any prose first.\
-"""
-
-_ORCHESTRATOR_COMPILE_PROMPT = """\
-You are the Global Backlog Orchestrator.
-You have received per-ticket Technical Pulse summaries from the Daily Summarizer.
-Build the High-Density markdown table:
-
-| Ticket (Link) | Instance | Status | Pulse (from latest comment) | Blocker |
-| :--- | :--- | :--- | :--- | :--- |
-
-URL rules:
-- LGE tickets (DVDNAIVI, AUDIODV, REAVN, DNSD): https://jira.lge.com/issue/browse/{KEY}
-- SPAWS tickets: https://spaws.jp.nissan.biz/jira/browse/{KEY}
-
-Pulse icons: 🔍 under analysis  🟢 resolved/done  🚨 critical blocker  ⏳ waiting
-
-Use ONLY data supplied by the sub-agent — never fabricate.
-After building the table call save_summary_to_linux with \
-ticket_key="GLOBAL" and filename="backlog_sync.md".\
-"""
 
 _SUMMARIZER_PROMPT = """\
 You are the Daily Summarizer sub-agent. Your job is to deeply understand a Jira \
@@ -64,12 +45,25 @@ Bad Pulse (do not do this):
 Do NOT copy-paste comment text verbatim. Reason about what is happening and summarise it.\
 """
 
+_SUMMARIZER_DAILY_PROMPT = """\
+You are the Summarizer Agent (Audio Framework Specialist).
+You receive ONE ticket key. Your steps:
+1. Call fetch_ticket_metadata for the given ticket (comment_limit=5).
+2. From the JSON response extract: KEY, STATUS, ASSIGNEE, SUMMARY, latest 5 comments.
+3. Determine INSTANCE: "LGE" if prefix in {DVDNAIVI, AUDIODV, REAVN, DNSD}, else "SPAWS".
+4. Synthesise a 1-sentence PULSE: what is the team actually doing RIGHT NOW?
+   Reason from the comments — do NOT copy-paste verbatim. If no comments: "No recent activity."
+5. Identify BLOCKER: one word/phrase for any explicit impediment, or "—" if none.
+6. Output EXACTLY ONE pipe-delimited line — no prose, no markdown, no extra lines:
+   TICKET_KEY | INSTANCE | STATUS | PULSE | BLOCKER\
+"""
+
 
 # ---------------------------------------------------------------------------
 # Fallback: simple single-agent nodes (used when no tools are available)
 # ---------------------------------------------------------------------------
 
-def make_llm_node(tools: list):
+def make_llm_node(tools: list[Any]) -> Callable[[dict], dict]:
     """Single-agent node — used as fallback when MCP tools are unavailable."""
     def node(state: dict) -> dict:
         llm = build_llm()
@@ -93,107 +87,10 @@ def route_after_llm(state: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator nodes
+# Summarizer sub-graph nodes (kept; used by legacy fallback path)
 # ---------------------------------------------------------------------------
 
-def make_orchestrator_fetch_node(fetch_tool):
-    """Instructs the LLM to call get_tickets_by_batch with the filter config."""
-    def node(state: dict) -> dict:
-        prefixes    = state.get("prefixes",    ["SPAWS", "LGE"])
-        mode        = state.get("mode",        "TEAM")
-        parent_link = state.get("parent_link", "")
-        filters     = state.get("filters",     {})
-
-        selected_keys = state.get("selected_filter_keys", [])
-        if selected_keys:
-            filters = {k: v for k, v in filters.items() if k in selected_keys}
-
-        context = f"Fetch all tickets for prefixes={prefixes}, mode='{mode}'."
-        if parent_link:
-            context += f" parent_link='{parent_link}'."
-        if filters:
-            context += f" filters={filters}."
-        context += " Call get_tickets_by_batch now."
-
-        llm = build_llm().bind_tools([fetch_tool])
-        messages = [
-            SystemMessage(content=_ORCHESTRATOR_FETCH_PROMPT),
-            HumanMessage(content=context),
-        ]
-        response = llm.invoke(messages)
-        return {"messages": [response]}
-    return node
-
-
-def route_after_orchestrator_fetch(state: dict) -> str:
-    last = state["messages"][-1]
-    if hasattr(last, "tool_calls") and last.tool_calls:
-        return "orchestrator_tools"
-    return END
-
-
-def parse_tickets_node(state: dict) -> dict:
-    """Extract the flat ticket list from the get_tickets_by_batch ToolMessage."""
-    for msg in reversed(state["messages"]):
-        if isinstance(msg, ToolMessage):
-            raw = msg.content
-            if isinstance(raw, list):
-                raw = " ".join(
-                    block.get("text", "") for block in raw if isinstance(block, dict)
-                )
-            try:
-                data = json.loads(raw)
-                tickets: list[dict] = []
-                for prefix_tickets in data.get("data", {}).values():
-                    tickets.extend(prefix_tickets)
-                return {"tickets": tickets}
-            except (json.JSONDecodeError, AttributeError):
-                pass
-    return {"tickets": []}
-
-
-def dispatch_to_summarizer(state: dict):
-    """Fan-out: send one message per ticket to the summarizer sub-graph."""
-    tickets = state.get("tickets", [])
-    if not tickets:
-        return END
-    return [
-        Send("summarizer", {"messages": [], "ticket": t, "summaries": []})
-        for t in tickets
-    ]
-
-
-def make_orchestrator_compile_node(save_tool):
-    """Compiles all per-ticket summaries into the final table and saves it."""
-    def node(state: dict) -> dict:
-        summaries = state.get("summaries", [])
-        summaries_text = "\n".join(f"[{i + 1}] {s}" for i, s in enumerate(summaries))
-        llm = build_llm().bind_tools([save_tool])
-        messages = [
-            SystemMessage(content=_ORCHESTRATOR_COMPILE_PROMPT),
-            HumanMessage(content=(
-                "Here are the per-ticket summaries from the Daily Summarizer:\n\n"
-                f"{summaries_text}\n\n"
-                "Build the High-Density table, then save it."
-            )),
-        ]
-        response = llm.invoke(messages)
-        return {"messages": [response]}
-    return node
-
-
-def route_after_compile(state: dict) -> str:
-    last = state["messages"][-1]
-    if hasattr(last, "tool_calls") and last.tool_calls:
-        return "save_tools"
-    return END
-
-
-# ---------------------------------------------------------------------------
-# Summarizer sub-graph nodes
-# ---------------------------------------------------------------------------
-
-def make_summarizer_node(fetch_tool):
+def make_summarizer_node(fetch_tool: Any) -> Callable[[dict], dict]:
     """Summarizer LLM — fetches metadata then synthesizes a Pulse summary."""
     def node(state: dict) -> dict:
         ticket = state.get("ticket", {})
@@ -241,3 +138,148 @@ def extract_summary_node(state: dict) -> dict:
             return {"summaries": [str(msg.content)]}
     ticket_key = state.get("ticket", {}).get("key", "UNKNOWN")
     return {"summaries": [f"{ticket_key} | UNKNOWN | UNKNOWN | No summary generated. | —"]}
+
+
+# ---------------------------------------------------------------------------
+# v4 Map-Reduce orchestrator nodes
+# ---------------------------------------------------------------------------
+
+_LGE_PREFIXES = {"DVDNAIVI", "AUDIODV", "REAVN", "DNSD"}
+_CLOSED_STATUSES = {"Closed", "Integrated", "Merged_VLM", "Done"}
+
+
+def make_discovery_and_dispatch_node(batch_tool: Any) -> Callable[[dict], Any]:
+    """Python-only node: fetch ticket keys via batch tool, filter, fan-out via Send."""
+    def node(state: dict) -> Any:
+        prefixes = state.get("prefixes", ["SPAWS", "LGE"])
+        mode = state.get("mode", "TEAM")
+        custom_jql = state.get("custom_jql", "")
+
+        try:
+            raw = batch_tool.invoke({"prefixes": prefixes, "mode": mode, "custom_jql": custom_jql})
+        except Exception as e:
+            return {
+                "messages": [AIMessage(content=(
+                    f"ERROR: Batch fetch failed — {e}. "
+                    "Verify JIRA credentials in jira_server.env."
+                ))]
+            }
+
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            tickets: list[dict] = []
+            for prefix_tickets in data.get("data", {}).values():
+                if isinstance(prefix_tickets, list):
+                    tickets.extend(prefix_tickets)
+        except (json.JSONDecodeError, AttributeError) as e:
+            return {
+                "messages": [AIMessage(content=(
+                    f"ERROR: Failed to parse batch response — {e}. "
+                    "Check get_tickets_by_batch tool output format."
+                ))]
+            }
+
+        valid_keys = [
+            t["key"] for t in tickets
+            if not t.get("key", "").startswith("CCC-")
+            and not t.get("summary", "").startswith("CCC-")
+        ]
+
+        if not valid_keys:
+            return {
+                "messages": [AIMessage(content="No actionable tickets found after filtering.")]
+            }
+
+        return [Send("summarizer_daily", {"ticket_key": k}) for k in valid_keys]
+
+    return node
+
+
+def make_summarizer_daily_node(fetch_tool: Any) -> Callable[[TicketState], dict]:
+    """LLM + tool loop node: fetch one ticket's metadata, synthesise to a pipe-delimited line."""
+    def node(state: TicketState) -> dict:
+        ticket_key: str = state["ticket_key"]
+
+        try:
+            messages: list = [
+                SystemMessage(content=_SUMMARIZER_DAILY_PROMPT),
+                HumanMessage(content=f"Ticket key: {ticket_key}"),
+            ]
+            llm = build_summarizer_llm().bind_tools([fetch_tool])
+
+            for _ in range(3):
+                response = llm.invoke(messages)
+                if not (hasattr(response, "tool_calls") and response.tool_calls):
+                    break
+                messages.append(response)
+                for tool_call in response.tool_calls:
+                    logger.debug("[summarizer_daily] tool_call args: %s", tool_call["args"])
+                    result = fetch_tool.invoke(tool_call["args"])
+                    messages.append(
+                        ToolMessage(content=str(result), tool_call_id=tool_call["id"])
+                    )
+
+            return {"ticket_summaries": [str(response.content)]}
+
+        except Exception as e:
+            fallback = (
+                f"{ticket_key} | ERROR | ERROR | "
+                f"Summarizer failed — {e}. Check provider credentials in Settings. | —"
+            )
+            return {"ticket_summaries": [fallback]}
+
+    return node
+
+
+def make_aggregate_and_report_node(save_tool: Any) -> Callable[[dict], dict]:
+    """Python-only node: parse accumulated summaries, build Markdown table, save, return."""
+    def node(state: dict) -> dict:
+        lge_base = os.getenv("JIRA_LGE_BASE_URL", "")
+        spaws_base = os.getenv("JIRA_SPAWS_BASE_URL", "")
+
+        if not lge_base or not spaws_base:
+            logger.warning(
+                "[aggregate] JIRA_LGE_BASE_URL or JIRA_SPAWS_BASE_URL not set. "
+                "Add them to tools/jira_server.env to generate clickable ticket links."
+            )
+
+        rows: list[tuple[str, str, str, str, str]] = []
+        for line in state.get("ticket_summaries", []):
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) < 5:
+                continue
+            key, instance, status, pulse, blocker = parts[0], parts[1], parts[2], parts[3], parts[4]
+            if key.startswith("CCC-") or status in _CLOSED_STATUSES:
+                continue
+            rows.append((key, instance, status, pulse, blocker))
+
+        if rows:
+            header = (
+                "| Ticket (Link) | Instance | Status | Pulse | Blocker |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n"
+            )
+            body_lines: list[str] = []
+            for key, instance, status, pulse, blocker in rows:
+                prefix = key.split("-")[0]
+                base = lge_base if prefix in _LGE_PREFIXES else spaws_base
+                url = f"{base}{key}" if base else key
+                body_lines.append(f"| [{key}]({url}) | {instance} | {status} | {pulse} | {blocker} |")
+            table = header + "\n".join(body_lines)
+        else:
+            table = "No active tickets after filtering."
+
+        try:
+            save_tool.invoke({
+                "ticket_key": "GLOBAL",
+                "filename": "backlog_sync.md",
+                "content": table,
+            })
+        except Exception as e:
+            logger.warning(
+                "[aggregate] save failed — %s. "
+                "Check Linux workspace path and permissions.", e
+            )
+
+        return {"messages": [AIMessage(content=table)]}
+
+    return node
