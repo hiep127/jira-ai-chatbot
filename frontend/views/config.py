@@ -84,7 +84,7 @@ def open_config_dialog(page: ft.Page) -> None:
         await _check_copilot_status()
 
     # --- Event handlers ---
-    def on_save(e: ft.ControlEvent) -> None:
+    async def on_save(e: ft.ControlEvent) -> None:
         save_btn.disabled = True
         page.update()
         try:
@@ -121,7 +121,7 @@ def open_config_dialog(page: ft.Page) -> None:
         actions_alignment=ft.MainAxisAlignment.END,
     )
 
-    def on_close(e: ft.ControlEvent) -> None:
+    async def on_close(e: ft.ControlEvent) -> None:
         dialog.open = False
         page.update()
 
@@ -132,4 +132,4 @@ def open_config_dialog(page: ft.Page) -> None:
     page.overlay.append(dialog)
     dialog.open = True
     page.update()
-    page.run_task(_check_copilot_status())
+    page.run_task(_check_copilot_status)

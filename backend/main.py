@@ -39,6 +39,15 @@ class ChatResponse(BaseModel):
     thread_id: str
 
 
+class PingResponse(BaseModel):
+    status: str
+    message: str
+
+
+class HealthResponse(BaseModel):
+    status: str
+
+
 class GitHubAuthStatusResponse(BaseModel):
     authenticated: bool
 
@@ -74,13 +83,13 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/ping")
-def ping() -> dict[str, str]:
-    return {"status": "ok", "message": "pong"}
+async def ping() -> PingResponse:
+    return PingResponse(status="ok", message="pong")
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "healthy"}
+async def health() -> HealthResponse:
+    return HealthResponse(status="healthy")
 
 
 @app.get("/auth/github/status")

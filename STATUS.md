@@ -11,7 +11,7 @@ Autonomous AI agent Windows desktop app. A user pastes a Jira parent link and th
 | Desktop UI | Flet (Python) |
 | Backend API | FastAPI + Uvicorn |
 | Agent loop | LangGraph (orchestrator + summarizer sub-graph) |
-| LLM access | LangChain (OpenAI / Anthropic / Azure via keyring) |
+| LLM access | LangChain (GitHub Copilot endpoint only — `ChatOpenAI` via `api.githubcopilot.com`) |
 | Tool routing | MCP via `langchain-mcp-adapters` |
 | Jira integration | Jira REST API (MCP tools: `get_tickets_by_batch`, `fetch_ticket_metadata`, `save_summary_to_linux`) |
 | Credential storage | `keyring` (Windows Credential Manager) |
@@ -47,18 +47,21 @@ Fallback: if any of the three MCP tools are missing (bundled `.exe` or MCP serve
 ### Backend
 | File | Status | Notes |
 |---|---|---|
-| `backend/main.py` | ✅ | FastAPI app, `/ping`, `/health`, `/chat`; `ChatRequest` includes `prefixes`, `mode`, `parent_link`, `filters` |
+| `backend/main.py` | ✅ | FastAPI app, `/ping`, `/health`, `/chat`; + `GET /auth/github/status`, `POST /auth/github/spawn-terminal`; unconditional 401 guard in `/chat` — always requires valid GitHub CLI token |
 | `backend/agent/state.py` | ✅ | `AgentState` and `SummarizerState` with `operator.add` reducer on `summaries` |
 | `backend/agent/nodes.py` | ✅ | All orchestrator + summarizer nodes; LLM synthesizes Pulse (not raw copy-paste) |
 | `backend/agent/graph.py` | ✅ | Full orchestrator + `_build_summarizer_subgraph`; fallback to single-LLM if tools missing |
-| `backend/agent/llm_factory.py` | ✅ | `build_llm()` — reads provider config from keyring |
-| `config/providers.py` | ✅ | Credential read/write via `keyring` (Windows Credential Manager) |
+| `backend/agent/llm_factory.py` | ✅ | `build_llm()` / `build_summarizer_llm()` — Copilot-only; always returns `ChatOpenAI` via GitHub Copilot endpoint; no provider routing |
+| `backend/utils/github_auth.py` | ✅ | `get_local_github_token()` (calls `gh auth token`); `spawn_windows_auth_terminal()` (opens cmd.exe) |
+| `config/providers.py` | ✅ | Jira PAT helpers + `save_active_provider` only; all multi-provider functions removed (`KEY_PROVIDERS`, `ALL_PROVIDERS`, `load_key`, `save_key`, `delete_key`, `load_active_provider`) |
 
 ### Frontend
 | File | Status | Notes |
 |---|---|---|
-| `frontend/main.py` | ✅ | Flet desktop app; starts backend in-process (thread); 120 s timeout |
-| `frontend/views/config.py` | ✅ | Provider configuration dialog (API key, model, base URL) |
+| `frontend/main.py` | ✅ | Flet desktop app; starts backend in-process (thread); 120 s timeout; GitHub Copilot 401 → SnackBar redirect (no modal dialog) |
+| `frontend/views/config.py` | ✅ | Copilot-only dialog (dropdown/key_field removed); proactive auth check on open via `page.run_task`; on_save guarded with try/except/finally — button disabled on entry, re-enabled in finally, show_error_dialog on failure; `on_save` + `on_close` converted to `async def`; `page.run_task` call fixed (removed `()` — passes callable reference, not coroutine object) |
+| `frontend/views/dialogs.py` | ✅ | Shared `show_error_dialog` helper — breaks circular import between `config.py` and `jira_settings.py` |
+| `frontend/views/jira_settings.py` | ✅ | `open_model_config` patched with try/except → `show_error_dialog` on failure; `on_save`, `on_cancel`, `open_model_config` converted to `async def` (Flet async-mode handler compliance) |
 
 **UI features:**
 - Chat message bubbles (user / assistant)

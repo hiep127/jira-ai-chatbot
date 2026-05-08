@@ -76,7 +76,7 @@ def open_jira_settings_dialog(
         content_padding=ft.padding.symmetric(horizontal=10, vertical=8),
     )
 
-    def on_save(e: ft.ControlEvent) -> None:
+    async def on_save(e: ft.ControlEvent) -> None:
         if (
             not profile_name_field.value.strip()
             or not pat_field.value.strip()
@@ -111,11 +111,11 @@ def open_jira_settings_dialog(
                 "Windows Credentials).",
             )
 
-    def on_cancel(e: ft.ControlEvent) -> None:
+    async def on_cancel(e: ft.ControlEvent) -> None:
         dialog.open = False
         page.update()
 
-    def open_model_config(e: ft.ControlEvent) -> None:
+    async def open_model_config(e: ft.ControlEvent) -> None:
         try:
             open_config_dialog(page)
         except Exception as exc:

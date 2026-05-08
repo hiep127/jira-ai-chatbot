@@ -28,6 +28,17 @@ env/
 .agents/
 .aider-desk/
 
+# GitHub Actions / CI workflows
+.github/
+
+# Harness & planning artifacts (tooling, not app code)
+run_harness.py
+feature_plan.md
+harness_plan.md
+req.md
+template_plan.md
+skills-lock.json
+
 # Windows
 Thumbs.db
 Desktop.ini

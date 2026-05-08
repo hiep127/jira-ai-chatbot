@@ -6,7 +6,8 @@ from typing import Any
 import httpx
 import uvicorn
 import flet as ft
-from frontend.views.jira_settings import open_jira_settings_dialog, show_error_dialog
+from frontend.views.jira_settings import open_jira_settings_dialog
+from frontend.views.dialogs import show_error_dialog
 # Imported directly so the compiled binary can run the backend in-process.
 # subprocess.Popen(sys.executable) would fork-bomb the packaged .exe.
 from backend.main import app as _backend_app
