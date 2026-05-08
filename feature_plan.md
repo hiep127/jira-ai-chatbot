@@ -1,191 +1,322 @@
-# Feature Plan: UI Polish & Architecture Documentation
+# Feature Plan: Windows CLI-Based GitHub Authentication
 
-**Status:** Implemented
-**Source:** `req.md` — three parts
-**Laws observed:** ARCHITECTURE.md (Strict Layered Architecture, Context Budgeting, Actionable Observability, Mathematical Precision, Security), CLAUDE.md (Plan Mode, MCP-first, no global state, keyring)
-
----
-
-## Files to Create or Modify
-
-| # | Action | Path |
-|---|--------|------|
-| 1 | Modify | `frontend/main.py` |
-| 2 | Modify | `ARCHITECTURE.md` *(append new section — do NOT replace existing engineering laws)* |
-| 3 | Modify | `frontend/views/jira_settings.py` *(UX polish: label shortening, field reordering, validation expansion, SnackBar → `show_error_dialog` — see Part 4)* |
-| 4 | Modify | `backend/main.py` *(add `/compact` POST route with `CompactRequest`/`CompactResponse` Pydantic models and LangGraph state-mutation logic)* |
-
-No new packages required.
+**Source Spec:** `req.md`
+**Objective:** Implement a GitHub authentication flow relying on the local GitHub CLI (`gh`). When the `/chat` endpoint detects the provider is `github_copilot` but `gh auth token` returns no token, it returns HTTP 401 with a sentinel detail string. The Flet frontend intercepts that 401 and opens an `ft.AlertDialog` with an "Open Terminal & Log In" button that spawns a visible `cmd.exe` window, and a "Refresh / I'm Done" button that re-checks token status via a dedicated endpoint.
 
 ---
 
-## Critical Conflict: `ARCHITECTURE.md` Already Exists
+## Codebase Scan — Current State
 
-`ARCHITECTURE.md` at the project root currently contains the **5 Engineering Laws** that the jira-planner skill reads as its constraint document. Overwriting it would destroy those rules.
-
-**Resolution:** Append a new `## Project Structure` section to the existing file rather than replacing it. All existing law content is preserved verbatim.
-
----
-
-## Part 1 — Move "Compact" Button to Input Row
-
-**File:** `frontend/main.py`
-
-### Change 1a — Remove `compact_btn` from the header `ft.Row`
-
-**Location:** Line 255
-
-Current:
-```
-ft.Row([title_text, summary_btn, compact_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-```
-
-New:
-```
-ft.Row([title_text, summary_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-```
-
-### Change 1b — Inject `compact_btn` into the input `ft.Row`
-
-**Location:** Line 257
-
-Current:
-```
-ft.Row([input_field, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-```
-
-New:
-```
-ft.Row([input_field, compact_btn, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-```
-
-**Result:** `compact_btn` sits immediately left of `send_btn` in the bottom input bar. The button widget itself (defined at lines 226–230) is unchanged.
+| Component | Relevant Detail |
+| :--- | :--- |
+| `backend/agent/llm_factory.py` L82–98 | `_get_copilot_token()` — private function that already calls `subprocess.run(["gh", "auth", "token"], ...)` and **raises** `RuntimeError` on any failure. This duplicates logic that should live in the new util. |
+| `backend/main.py` L77–98 | `POST /chat` — catches `RuntimeError` and returns HTTP 500. No GitHub-auth pre-check today; auth failure surfaces as a generic 500. |
+| `backend/main.py` L101–154 | `POST /compact` — calls `build_llm()` directly (line 123). GitHub auth failure here also surfaces as 500. Out of scope for this plan — compact has its own error handling that would require a separate UI update. |
+| `frontend/main.py` L113–123 | `process_chat_message` 401 handler — currently shows a static hint about Jira PAT. No distinction between Jira-401 and GitHub-401. |
+| `frontend/main.py` L9 | `show_error_dialog` imported from `jira_settings.py` — reused as-is. |
+| `backend/utils/` | Contains only `__init__.py` after `jql_parser.py` deletion. New `github_auth.py` goes here. |
 
 ---
 
-## Part 2 — Guardrail for "Generate Daily Summary"
+## Architecture Compliance Check
 
-**File:** `frontend/main.py`
+| Rule | Status | Notes |
+| :--- | :--- | :--- |
+| **Rule 1 — Layered Architecture** | ✓ | New util in `backend/utils/`, endpoints in `backend/main.py`, UI in `frontend/main.py`. No cross-layer imports. |
+| **Rule 2 — Context Budgeting** | N/A | No Jira JSON payloads involved in this feature. |
+| **Rule 3 — Observability** | ✓ | All subprocess calls wrapped in `try/except`. 401 detail string includes actionable remediation step. |
+| **Rule 4 — Mathematical Precision** | ✓ | Exact file paths listed. `AgentState` TypedDict unchanged — no routing impact. |
+| **Rule 5 — Security** | ✓ | Token read via `gh` CLI subprocess only. No token written to files, logs, or HTTP responses. Endpoint payload omits the token value. |
 
-**Location:** `on_daily_summary` function, lines 170–173
+---
 
-Current function body:
-```
-async def on_daily_summary(e: ft.ControlEvent) -> None:
-    await process_chat_message(
-        "Please generate a detailed daily summary based on my currently active Jira filters."
-    )
-```
+## Files to be Modified or Created
 
-New function body (guard inserted at the very top, before any network call):
-```
-async def on_daily_summary(e: ft.ControlEvent) -> None:
-    if not app_state.get("filters"):
-        show_error_dialog(
-            page,
-            "Cannot generate summary: No Jira filters configured.\n\n"
-            "Remediation: Please open Settings (the gear icon) and import a JQL "
-            "string or add a filter before requesting a summary."
+| File | Change Type | Summary |
+| :--- | :--- | :--- |
+| `backend/utils/github_auth.py` | **CREATE** | `get_local_github_token() -> str \| None` and `spawn_windows_auth_terminal()` |
+| `backend/agent/llm_factory.py` | **MODIFY** | Replace `_get_copilot_token()` body to delegate to new util (eliminate duplication) |
+| `backend/main.py` | **MODIFY** | Add `GET /auth/github/status` and `POST /auth/github/spawn-terminal`; add GitHub-auth pre-check to `/chat` |
+| `frontend/main.py` | **MODIFY** | Add `_open_github_auth_dialog()` local function; update 401 branch in `process_chat_message` |
+
+`backend/agent/graph.py`, `backend/agent/nodes.py`, `backend/agent/state.py`, `tools/jira_tool.py`, `frontend/views/jira_settings.py` — **no changes required**.
+
+---
+
+## Step 1 — New Utility (`backend/utils/github_auth.py`)
+
+Create a new file. Two public functions only.
+
+### 1a — `get_local_github_token() -> str | None`
+
+```python
+import subprocess
+
+def get_local_github_token() -> str | None:
+    """Return the GitHub CLI token, or None on any failure."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True, text=True, timeout=5, check=True,
         )
-        return
-    await process_chat_message(
-        "Please generate a detailed daily summary based on my currently active Jira filters."
+        token = result.stdout.strip()
+        return token if token else None
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+```
+
+**Context Budgeting note:** The token string is returned to the caller only; it is never logged or passed to the LLM context. The HTTP status endpoint (Step 3) returns only a boolean, not the token.
+
+### 1b — `spawn_windows_auth_terminal() -> None`
+
+```python
+import subprocess
+
+def spawn_windows_auth_terminal() -> None:
+    """Open a new cmd.exe window for interactive 'gh auth login'.
+
+    CREATE_NEW_CONSOLE is required: it forces Windows to physically open a
+    new terminal window so the user can interact with gh's arrow-key prompts.
+    Without it the subprocess inherits the parent's (hidden) console and
+    the user sees nothing.
+    """
+    subprocess.Popen(
+        ["cmd.exe", "/c", "gh auth login & echo. & pause"],
+        creationflags=subprocess.CREATE_NEW_CONSOLE,
     )
 ```
 
-**Law compliance (Actionable Observability):** The error dialog provides a specific remediation step. No backend call is made when the guard fires — zero API cost.
-
-**Context Budgeting:** N/A — no Jira API call is made when the guard halts execution. Downstream, the existing `process_chat_message` path already passes only selected filter keys to `/chat`, not raw Jira payloads.
+`subprocess.Popen` is non-blocking — it spawns the window and returns immediately, keeping the FastAPI event loop free.
 
 ---
 
-## Part 3 — Append Project Structure to `ARCHITECTURE.md`
+## Step 2 — LLM Factory Deduplication (`backend/agent/llm_factory.py`)
 
-**File:** `ARCHITECTURE.md`
+### 2a — Remove the internal subprocess duplication
 
-A new section will be appended after the existing 5-rule law block. The codebase scan (performed above) identified the following files:
+**Current `_get_copilot_token()` (lines 82–97):** Contains its own `subprocess.run` block with `FileNotFoundError` / `CalledProcessError` handling — a duplicate of Step 1a.
 
-```
-AI Chatbot/
-├── ARCHITECTURE.md          ← Engineering laws + project structure (this file)
-├── CLAUDE.md                ← Claude Code guidance and workflow rules
-├── feature_plan.md          ← Current implementation plan (regenerated each session)
-├── req.md                   ← Incoming feature requirements
-├── requirements.txt         ← Python dependency manifest
-├── run_harness.py           ← Dev harness for end-to-end test runs
-│
-├── frontend/
-│   ├── main.py              ← Flet app entry point; starts backend in-process, owns all UI state
-│   ├── __init__.py
-│   └── views/
-│       ├── chat.py          ← (reserved) — chat view decomposition target
-│       ├── config.py        ← Provider configuration dialog
-│       ├── jira_settings.py ← Jira filter import dialog and error-dialog helper
-│       └── __init__.py
-│
-├── backend/
-│   ├── main.py              ← FastAPI app; /chat, /compact, /health, /api/filters/parse-jql routes
-│   ├── __init__.py
-│   ├── agent/
-│   │   ├── graph.py         ← LangGraph graph definition and compilation (MemorySaver checkpointer)
-│   │   ├── llm_factory.py   ← Builds the LLM client from provider credentials at runtime
-│   │   ├── nodes.py         ← LangGraph node functions (llm_call, orchestrator_fetch, route_after_llm)
-│   │   ├── state.py         ← AgentState TypedDict (extends MessagesState)
-│   │   └── __init__.py
-│   └── utils/
-│       ├── jql_parser.py    ← Parses raw JQL strings into structured filter dicts (Context Budgeting)
-│       └── __init__.py
-│
-├── config/
-│   ├── providers.py         ← Credential read/write via keyring (Windows Credential Manager)
-│   └── __init__.py
-│
-├── tools/
-│   ├── jira_tool.py         ← MCP tool: fetches Jira issues and returns only parsed fields
-│   ├── mock_jira_mcp.py     ← Stub MCP server for local dev/testing without live Jira
-│   └── __init__.py
-│
-└── tests/
-    ├── test_ping.py         ← Health-check integration test
-    └── test_providers.py    ← Credential store unit tests
+**Replace the function body:**
+
+```python
+from backend.utils.github_auth import get_local_github_token
+
+def _get_copilot_token() -> str:
+    token = get_local_github_token()
+    if token is None:
+        raise RuntimeError(
+            "GitHub CLI not authenticated. Open a terminal and run 'gh auth login'."
+        )
+    return token
 ```
 
-### Data Flow Summary
+The function signature is unchanged (`-> str`), so the two call sites inside `build_llm()` and `build_summarizer_llm()` require no update.
 
-**Flet → FastAPI:** `frontend/main.py` communicates with the backend exclusively over `localhost:8000` HTTP using `httpx`. It never imports backend modules for data access (exception: the in-process uvicorn launch at startup to avoid fork-bombing a packaged `.exe`).
-
-**FastAPI → LangGraph → MCP:** `/chat` passes the user prompt and filter state into the compiled LangGraph graph. The graph's nodes invoke Jira tool calls via MCP (`tools/jira_tool.py`). `jql_parser.py` and the tool layer ensure only extracted fields (`issue_key`, `summary`, `status`, `assignee`) reach the LLM — never raw Jira JSON payloads.
+**Remove** the `import subprocess` statement from `llm_factory.py` — it is now unused in that file.
 
 ---
 
-## Part 4 — Jira Settings UX Polish *(retroactively documented — committed in 809cd0a)*
+## Step 3 — FastAPI Routes (`backend/main.py`)
 
-**File:** `frontend/views/jira_settings.py`
+### 3a — GitHub auth status endpoint
 
-### Change 4a — Label shortening
-Field labels renamed for visual brevity and to surface the required-field asterisk:
-- `"Filter Profile Name"` → `"Profile Name *"`
-- `"Jira Personal Access Token"` → `"Jira PAT *"`
-- `"Jira Parent Link (required)"` → `"Jira Parent Link *"`
+Add after the `/health` route:
 
-### Change 4b — Field reordering in `_build_dialog_content`
-Credential fields (Profile Name, PAT, Parent Link) moved to the **top** of the dialog, before the JQL import card. Previously they appeared below the card, making required fields harder to locate.
+```python
+@app.get("/auth/github/status")
+def github_auth_status() -> dict[str, bool]:
+    from backend.utils.github_auth import get_local_github_token
+    return {"authenticated": get_local_github_token() is not None}
+```
 
-### Change 4c — `on_save` validation expanded
-Guard widened from checking only `parent_link_field` to checking all three required fields (profile name, PAT, parent link). Missing any one of these produces an actionable error dialog.
+Returns `{"authenticated": true}` or `{"authenticated": false}`. Does **not** expose the token value in the response.
 
-### Change 4d — SnackBar → `show_error_dialog`
-Replaced inline `page.open(ft.SnackBar(...))` with the shared `show_error_dialog(page, ...)` helper, consistent with the rest of the UI. The dialog provides a specific remediation string (Law: Actionable Observability).
+### 3b — Terminal spawn endpoint
+
+```python
+@app.post("/auth/github/spawn-terminal")
+def spawn_github_terminal() -> dict[str, str]:
+    try:
+        from backend.utils.github_auth import spawn_windows_auth_terminal
+        spawn_windows_auth_terminal()
+        return {"status": "ok", "message": "Terminal window opened."}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to open terminal: {e}. Ensure cmd.exe is accessible on this system.",
+        )
+```
+
+Both endpoints are sync `def` (not `async def`). FastAPI runs them in a thread pool automatically; this is correct because `Popen` and `subprocess.run` are blocking OS calls.
+
+### 3c — GitHub-auth pre-check in `/chat`
+
+**Add to the top of the `chat()` handler, before the `try` block:**
+
+```python
+@app.post("/chat")
+async def chat(body: ChatRequest, request: Request) -> ChatResponse:
+    # Pre-check: surface unauthenticated GitHub Copilot as 401 (not 500)
+    from config.providers import load_active_provider
+    from backend.utils.github_auth import get_local_github_token
+    if load_active_provider() == "github_copilot" and get_local_github_token() is None:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "GitHub CLI not authenticated. "
+                "Run 'gh auth login' to authenticate."
+            ),
+        )
+    try:
+        ...  # existing graph.ainvoke block unchanged
+```
+
+**Why this placement:** The pre-check runs before the LangGraph graph is invoked, giving the frontend a clean 401 signal rather than a buried 500 RuntimeError. The check is gated on `provider == "github_copilot"` so OpenAI and Anthropic users are never affected.
+
+**`AgentState` impact:** None. `custom_jql`, `prefixes`, `mode`, and all other state keys are unchanged. No routing functions read auth state — no infinite loop risk.
 
 ---
 
-## What This Plan Does NOT Change
+## Step 4 — Frontend (`frontend/main.py`)
 
-- `backend/agent/` — no graph, node, or state changes
-- `backend/utils/` — no changes
-- `config/providers.py` — no changes
-- `tools/` — no changes
-- `requirements.txt` — no new packages
-- `tests/` — no test changes
+### 4a — Add `_open_github_auth_dialog()` local function inside `main()`
 
-**All parts implemented and committed.**
+Add this function **inside** `async def main(page: ft.Page)`, after `rebuild_sidebar` is defined. It captures `page` from the enclosing scope.
+
+```python
+def _open_github_auth_dialog() -> None:
+    async def on_open_terminal(e: ft.ControlEvent) -> None:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post("http://localhost:8000/auth/github/spawn-terminal")
+        except Exception as exc:
+            show_error_dialog(page, f"Could not open terminal: {exc}")
+
+    async def on_refresh(e: ft.ControlEvent) -> None:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get("http://localhost:8000/auth/github/status")
+            if r.json().get("authenticated"):
+                auth_dlg.open = False
+                page.update()
+            else:
+                show_error_dialog(
+                    page,
+                    "Not yet authenticated. Complete 'gh auth login' in the terminal window, then click Refresh again.",
+                )
+        except Exception as exc:
+            show_error_dialog(page, f"Status check failed: {exc}")
+
+    auth_dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Authentication Required", color=ft.Colors.ORANGE_400),
+        content=ft.Text(
+           content=ft.Text(
+            "GitHub Copilot is not authenticated.\n\n"
+            "1. Click 'Open Terminal & Log In'.\n"
+            "2. Follow the prompts in the terminal window to authenticate.\n"
+            "3. Once the terminal says 'Logged in', return here.\n"
+            "4. Click 'Refresh / I'm Done' to verify and close this dialog."
+        ),
+        actions=[
+            ft.ElevatedButton("Open Terminal & Log In", on_click=on_open_terminal),
+            ft.TextButton("Refresh / I'm Done", on_click=on_refresh),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(auth_dlg)
+    auth_dlg.open = True
+    page.update()
+```
+
+### 4b — Update the 401 branch in `process_chat_message`
+
+**Current (lines 113–123):**
+```python
+else:
+    detail = r.json().get("detail", r.text)
+    message_list.controls.remove(thinking)
+    _status_hints: dict[int, str] = {
+        401: "Token expired or invalid — update your PAT in Settings → Jira Personal Access Token.",
+        ...
+    }
+    hint = _status_hints.get(r.status_code, "Check the terminal log for details.")
+    ...
+    show_error_dialog(page, f"Error {r.status_code}: {detail}\n\nRemediation: {hint}")
+```
+
+**New — split the 401 case:**
+```python
+else:
+    detail = r.json().get("detail", r.text)
+    message_list.controls.remove(thinking)
+
+    if r.status_code == 401 and "GitHub CLI" in detail:
+        _open_github_auth_dialog()
+    else:
+        _status_hints: dict[int, str] = {
+            401: "Token expired or invalid — update your PAT in Settings → Jira Personal Access Token.",
+            403: "Access denied — verify your Jira role has permission to read these issues.",
+            404: "Endpoint not found — ensure the backend is the latest version.",
+            500: "Backend internal error — check the terminal log for a Python traceback.",
+        }
+        hint = _status_hints.get(r.status_code, "Check the terminal log for details.")
+        print(f"[on_send] HTTP {r.status_code}: {detail}")
+        show_error_dialog(page, f"Error {r.status_code}: {detail}\n\nRemediation: {hint}")
+```
+
+The sentinel string `"GitHub CLI"` matches the exact `detail` value set in Step 3c. Jira-originated 401s (e.g., expired PAT from the Jira API layer) do not contain this string and continue to use the existing PAT hint.
+
+---
+
+## Data Flow After Implementation
+
+```
+User sends message (GitHub Copilot provider active)
+  ↓  POST /chat  {prompt: "…", thread_id: "…", custom_jql: "…"}
+FastAPI /chat pre-check:
+  → load_active_provider() == "github_copilot"  → True
+  → get_local_github_token()                    → None  (gh not authed)
+  → raise HTTPException(401, "GitHub CLI not authenticated…")
+  ↓
+Flet frontend receives HTTP 401
+  → "GitHub CLI" in detail                      → True
+  → _open_github_auth_dialog()
+      → "Open Terminal & Log In" clicked
+          → POST /auth/github/spawn-terminal
+          → subprocess.Popen(["cmd.exe", …], CREATE_NEW_CONSOLE)
+          → visible cmd window opens for user
+      → "Refresh / I'm Done" clicked
+          → GET /auth/github/status
+          → get_local_github_token() → "gho_…"  → {"authenticated": true}
+          → dialog closes
+  User retries message → now succeeds
+```
+## Post-Authentication User Guide
+
+**What the user needs to do once implemented:**
+1. **In the UI:** The user clicks "Open Terminal & Log In".
+2. **In the spawned Terminal:** The user will be asked standard `gh` setup questions. The recommended path is:
+   - *What account do you want to log into?* → `GitHub.com`
+   - *What is your preferred protocol for Git operations?* → `HTTPS`
+   - *Authenticate Git with your GitHub credentials?* → `Y`
+   - *How would you like to authenticate?* → `Login with a web browser`
+3. The user completes the login in their default browser and copies the one-time device code if prompted.
+4. **Completion:** The terminal will display `Logged in as <username>` and prompt `Press any key to continue...`. Pressing any key will cleanly close the terminal window.
+5. **Back in the UI:** The user clicks **"Refresh / I'm Done"**. The backend detects the token, Flet safely dismisses the dialog, and the user simply retries their message.
+---
+
+## What Does NOT Change
+
+- `AgentState` TypedDict — no fields added or removed; all routing functions unaffected.
+- `backend/agent/graph.py` — no changes; neither routing function reads auth state.
+- `backend/agent/nodes.py` — no changes.
+- `tools/jira_tool.py` — no changes.
+- `frontend/views/jira_settings.py` — no changes.
+- `backend/agent/llm_factory.py` `build_llm()` and `build_summarizer_llm()` call sites — unchanged; `_get_copilot_token()` signature is preserved.
+- The `/compact` endpoint — out of scope; its error path would require a separate UI update to handle 401 gracefully.
+- All existing Jira-401 error hints in the frontend — preserved; the GitHub-401 branch is additive only.
+
+---
+
+## Awaiting Explicit User Approval Before Any Code Is Written.

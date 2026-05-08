@@ -38,6 +38,15 @@ class ChatResponse(BaseModel):
     thread_id: str
 
 
+class GitHubAuthStatusResponse(BaseModel):
+    authenticated: bool
+
+
+class GitHubSpawnTerminalResponse(BaseModel):
+    status: str
+    message: str
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if getattr(sys, "frozen", False):
@@ -73,8 +82,37 @@ def health() -> dict[str, str]:
     return {"status": "healthy"}
 
 
+@app.get("/auth/github/status")
+def github_auth_status() -> GitHubAuthStatusResponse:
+    from backend.utils.github_auth import get_local_github_token
+    return GitHubAuthStatusResponse(authenticated=get_local_github_token() is not None)
+
+
+@app.post("/auth/github/spawn-terminal")
+def spawn_github_terminal() -> GitHubSpawnTerminalResponse:
+    try:
+        from backend.utils.github_auth import spawn_windows_auth_terminal
+        spawn_windows_auth_terminal()
+        return GitHubSpawnTerminalResponse(status="ok", message="Terminal window opened.")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to open terminal: {e}. Ensure cmd.exe is accessible on this system.",
+        )
+
+
 @app.post("/chat")
 async def chat(body: ChatRequest, request: Request) -> ChatResponse:
+    from config.providers import load_active_provider
+    from backend.utils.github_auth import get_local_github_token
+    if load_active_provider() == "github_copilot" and get_local_github_token() is None:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "GitHub CLI not authenticated. "
+                "Run 'gh auth login' to authenticate."
+            ),
+        )
     try:
         result = await request.app.state.graph.ainvoke(
             {

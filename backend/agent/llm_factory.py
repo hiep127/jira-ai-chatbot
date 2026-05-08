@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import subprocess
-
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from config.providers import load_active_provider, load_key
@@ -80,18 +78,10 @@ def build_summarizer_llm() -> BaseChatModel:
 
 
 def _get_copilot_token() -> str:
-    try:
-        result = subprocess.run(
-            ["gh", "auth", "token"],
-            capture_output=True, text=True, timeout=5, check=True,
-        )
-        token = result.stdout.strip()
-        if not token:
-            raise RuntimeError("'gh auth token' returned empty output.")
-        return token
-    except FileNotFoundError:
+    from backend.utils.github_auth import get_local_github_token
+    token = get_local_github_token()
+    if token is None:
         raise RuntimeError(
-            "GitHub CLI ('gh') not found. Install it and run 'gh auth login'."
+            "GitHub CLI not authenticated. Open a terminal and run 'gh auth login'."
         )
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"'gh auth token' failed: {e.stderr.strip()}")
+    return token
