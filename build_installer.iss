@@ -2,7 +2,7 @@
 #define AppVersion   "1.0"
 #define AppPublisher "LGE"
 #define AppExeName   "Jira AI.exe"
-#define SourceDir    "dist\Jira AI"
+#define SourceDir    "dist\JiraAgent"
 #define OutputDir    "installer_output"
 
 [Setup]
