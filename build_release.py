@@ -20,8 +20,32 @@ import sys
 from pathlib import Path
 
 
+def _check_prerequisites(root: Path) -> None:
+    import importlib.metadata
+    # Flet version gate
+    try:
+        installed = importlib.metadata.version("flet")
+        required = (root / "requirements.txt").read_text().splitlines()
+        pinned = next((l.split("==")[1] for l in required if l.startswith("flet==")), None)
+        if pinned and installed != pinned:
+            print(f"WARNING: flet {installed} installed but requirements.txt pins flet=={pinned}.")
+            print("         Run: pip install -r requirements.txt")
+            print()
+    except Exception:
+        pass
+
+    # GitHub CLI gate (customers need this at runtime)
+    if shutil.which("gh") is None:
+        print("WARNING: GitHub CLI (gh) not found on PATH.")
+        print("         Customers must have it installed to use this app.")
+        print("         Download: https://cli.github.com")
+        print()
+
+
 def main() -> None:
     root = Path(__file__).parent
+
+    _check_prerequisites(root)
 
     print("[1/3] Running PyInstaller...")
     result = subprocess.run(
