@@ -9,7 +9,6 @@ __pycache__/
 .pytest_cache/
 
 # Build artifacts
-dist/
 build/
 
 # Environment files
