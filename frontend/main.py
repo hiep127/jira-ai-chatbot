@@ -34,12 +34,9 @@ def _make_bubble(text: str, role: str) -> ft.Container:
     return ft.Container(
         content=ft.Text(text, color=ft.Colors.WHITE, selectable=True),
         bgcolor=ft.Colors.BLUE_700 if is_user else ft.Colors.GREY_800,
-        border_radius=ft.border_radius.all(12),
-        padding=ft.padding.symmetric(horizontal=14, vertical=10),
-        margin=ft.margin.only(
-            left=80 if is_user else 0,
-            right=0 if is_user else 80,
-        ),
+        border_radius=12,
+        padding=ft.Padding(left=14, right=14, top=10, bottom=10),
+        margin=ft.Margin(left=80 if is_user else 0, right=0 if is_user else 80, top=0, bottom=0),
     )
 
 
@@ -196,7 +193,7 @@ async def main(page: ft.Page) -> None:
                 message_list.controls.append(
                     ft.Container(
                         content=ft.Text(notice_text, italic=True, size=11, color=ft.Colors.GREY_500),
-                        padding=ft.padding.symmetric(horizontal=14, vertical=4),
+                        padding=ft.Padding(left=14, right=14, top=4, bottom=4),
                     )
                 )
             else:
@@ -259,7 +256,7 @@ async def main(page: ft.Page) -> None:
                 ft.Container(
                     content=sidebar_col,
                     width=220,
-                    padding=ft.padding.symmetric(horizontal=8, vertical=10),
+                    padding=ft.Padding(left=8, right=8, top=10, bottom=10),
                     border=ft.border.only(right=ft.BorderSide(1, ft.Colors.GREY_800)),
                 ),
                 ft.Column(

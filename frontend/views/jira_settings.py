@@ -21,7 +21,7 @@ def open_jira_settings_dialog(
         hint_text="e.g. My Sprint View",
         value=state.get("filter_profile_name", ""),
         expand=True,
-        content_padding=ft.padding.symmetric(horizontal=10, vertical=8),
+        content_padding=ft.Padding(left=10, right=10, top=8, bottom=8),
     )
 
     pat_field = ft.TextField(
@@ -30,7 +30,7 @@ def open_jira_settings_dialog(
         can_reveal_password=True,
         value=get_jira_pat() or "",
         expand=True,
-        content_padding=ft.padding.symmetric(horizontal=10, vertical=8),
+        content_padding=ft.Padding(left=10, right=10, top=8, bottom=8),
     )
 
     _parsed_jira_env: str = state.get("jira_env", "")
@@ -52,7 +52,7 @@ def open_jira_settings_dialog(
         hint_text="e.g. https://jira.lge.com/browse/PROJ-42",
         value=state.get("parent_link", ""),
         expand=True,
-        content_padding=ft.padding.symmetric(horizontal=10, vertical=8),
+        content_padding=ft.Padding(left=10, right=10, top=8, bottom=8),
         on_change=_on_parent_link_change,
     )
 
@@ -73,7 +73,7 @@ def open_jira_settings_dialog(
         hint_text="e.g., assignee in (hang2.le, hiep.tran) AND resolution = Unresolved ORDER BY updated DESC",
         value=state.get("custom_jql", ""),
         expand=True,
-        content_padding=ft.padding.symmetric(horizontal=10, vertical=8),
+        content_padding=ft.Padding(left=10, right=10, top=8, bottom=8),
     )
 
     async def on_save(e: ft.ControlEvent) -> None:
