@@ -257,7 +257,7 @@ async def main(page: ft.Page) -> None:
                     content=sidebar_col,
                     width=220,
                     padding=ft.Padding(left=8, right=8, top=10, bottom=10),
-                    border=ft.border.only(right=ft.BorderSide(1, ft.Colors.GREY_800)),
+                    border=ft.Border(right=ft.BorderSide(1, ft.Colors.GREY_800)),
                 ),
                 ft.Column(
                     controls=[
