@@ -9,6 +9,9 @@ Steps:
 
 Usage:
     python build_release.py
+
+Note: verify the Flet version matches requirements.txt before building.
+Run `python -c "import flet; print(flet.__version__)"` to confirm.
 """
 
 import shutil

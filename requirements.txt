@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-flet>=0.21.0
+flet==0.84.0
 httpx
 keyring
 pytest

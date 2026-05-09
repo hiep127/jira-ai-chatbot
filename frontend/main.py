@@ -83,7 +83,7 @@ async def main(page: ft.Page) -> None:
         if sidebar_col.page:
             sidebar_col.update()
 
-    message_list = ft.ListView(expand=True, spacing=8, padding=ft.padding.all(10), auto_scroll=True)
+    message_list = ft.ListView(expand=True, spacing=8, padding=10, auto_scroll=True)
 
     async def process_chat_message(prompt_text: str) -> None:
         input_field.disabled = True
