@@ -3,22 +3,25 @@ from __future__ import annotations
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
+_DEFAULT_MODEL = "gpt-4o"
+_DEFAULT_SUMMARIZER_MODEL = "gpt-4o-mini"
 
-def build_llm() -> BaseChatModel:
+
+def build_llm(model_id: str = "") -> BaseChatModel:
     token = _get_copilot_token()
     return ChatOpenAI(
         api_key=token,
         base_url="https://api.githubcopilot.com",
-        model="gpt-4o",
+        model=model_id if model_id else _DEFAULT_MODEL,
     )
 
 
-def build_summarizer_llm() -> BaseChatModel:
+def build_summarizer_llm(model_id: str = "") -> BaseChatModel:
     token = _get_copilot_token()
     return ChatOpenAI(
         api_key=token,
         base_url="https://api.githubcopilot.com",
-        model="gpt-4o-mini",
+        model=model_id if model_id else _DEFAULT_SUMMARIZER_MODEL,
     )
 
 

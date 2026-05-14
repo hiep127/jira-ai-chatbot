@@ -8,6 +8,7 @@ import uvicorn
 import flet as ft
 from frontend.views.jira_settings import open_jira_settings_dialog
 from frontend.views.dialogs import show_error_dialog
+from frontend.components.model_picker import open_model_picker
 # Imported directly so the compiled binary can run the backend in-process.
 # subprocess.Popen(sys.executable) would fork-bomb the packaged .exe.
 from backend.main import app as _backend_app
@@ -52,6 +53,9 @@ async def main(page: ft.Page) -> None:
         "jira_env":            "",
         "parent_link":         "",
         "custom_jql":          "",
+        "model_id":            "",
+        "model_name":          "",
+        "model_tier":          "",
     }
 
     sidebar_col = ft.Column(
@@ -121,6 +125,7 @@ async def main(page: ft.Page) -> None:
                         "mode":        "TEAM",
                         "parent_link": app_state["parent_link"],
                         "custom_jql":  app_state.get("custom_jql", ""),
+                        "model_id":    app_state.get("model_id", ""),
                     },
                 )
             if r.status_code == 200:
@@ -200,7 +205,7 @@ async def main(page: ft.Page) -> None:
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post(
                     "http://localhost:8000/compact",
-                    json={"thread_id": thread_id},
+                    json={"thread_id": thread_id, "model_id": app_state.get("model_id", "")},
                 )
             message_list.controls.remove(compressing_bubble)
             bubble_removed = True
@@ -253,7 +258,17 @@ async def main(page: ft.Page) -> None:
         on_click=on_daily_summary,
     )
 
-    title_text = ft.Text("AI Agent", size=20, weight=ft.FontWeight.BOLD)
+    model_chip_label = ft.Text("Select model", size=13)
+    model_chip = ft.TextButton(
+        content=model_chip_label,
+        on_click=lambda e: open_model_picker(page, app_state, _on_model_selected),
+    )
+
+    def _on_model_selected() -> None:
+        name = app_state.get("model_name", "")
+        tier = app_state.get("model_tier", "")
+        model_chip_label.value = f"{name} · {tier}" if name else "Select model"
+        page.update()
 
     async def refresh_auth_state() -> None:
         try:
@@ -305,7 +320,7 @@ async def main(page: ft.Page) -> None:
                 ),
                 ft.Column(
                     controls=[
-                        ft.Row([title_text, summary_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        ft.Row([model_chip, summary_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                         auth_guard_container,
                         message_list,
                         ft.Row([input_field, compact_btn, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),

@@ -5,7 +5,6 @@ from collections.abc import Callable
 import flet as ft
 import httpx
 
-from config.providers import save_active_provider
 from frontend.views.dialogs import show_error_dialog
 
 
@@ -34,7 +33,6 @@ def open_config_dialog(page: ft.Page, on_closed: Callable[[], None] | None = Non
         visible=True,
     )
     status_text = ft.Text("", size=12)
-    save_btn = ft.ElevatedButton("Save")
     close_btn = ft.TextButton("Close")
 
     # --- Helpers ---
@@ -43,10 +41,13 @@ def open_config_dialog(page: ft.Page, on_closed: Callable[[], None] | None = Non
         status_text.color = color or None
 
     # --- Async helpers ---
-    async def _check_copilot_status() -> None:
+    async def _check_copilot_status(force: bool = False) -> None:
         try:
             async with httpx.AsyncClient(timeout=5) as client:
-                r = await client.get("http://localhost:8000/auth/github/status")
+                r = await client.get(
+                    "http://localhost:8000/auth/github/status",
+                    params={"force": "true"} if force else {},
+                )
             authenticated = r.json().get("authenticated", False)
             if authenticated:
                 copilot_status_ok.visible    = True
@@ -83,29 +84,9 @@ def open_config_dialog(page: ft.Page, on_closed: Callable[[], None] | None = Non
     async def on_refresh_auth(e: ft.ControlEvent) -> None:
         set_status("Checking authentication…")
         page.update()
-        await _check_copilot_status()
-
-    # --- Event handlers ---
-    async def on_save(e: ft.ControlEvent) -> None:
-        save_btn.disabled = True
-        page.update()
-        try:
-            save_active_provider("github_copilot")
-            set_status("GitHub Copilot set as active provider.", "green")
-        except Exception as exc:
-            print(f"[on_save] {exc}")
-            show_error_dialog(
-                page,
-                f"Failed to save provider: {exc}\n\n"
-                "Remediation: ensure Windows Credential Manager is accessible "
-                "(Control Panel → Credential Manager → Windows Credentials).",
-            )
-        finally:
-            save_btn.disabled = False
-            page.update()
+        await _check_copilot_status(force=True)
 
     # --- Assign handlers ---
-    save_btn.on_click          = on_save
     open_terminal_btn.on_click = on_open_terminal
     refresh_auth_btn.on_click  = on_refresh_auth
 
@@ -119,7 +100,7 @@ def open_config_dialog(page: ft.Page, on_closed: Callable[[], None] | None = Non
             spacing=12,
             width=380,
         ),
-        actions=[save_btn, close_btn],
+        actions=[close_btn],
         actions_alignment=ft.MainAxisAlignment.END,
         on_dismiss=lambda e: on_closed() if on_closed else None,
     )

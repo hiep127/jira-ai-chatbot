@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+_auth_cache: bool | None = None
+
 
 def _gh_exe() -> str:
     """Return path to gh executable.
@@ -28,12 +30,25 @@ def get_local_github_token() -> str | None:
     try:
         result = subprocess.run(
             [_gh_exe(), "auth", "token"],
-            capture_output=True, text=True, timeout=5, check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         token = result.stdout.strip()
         return token if token else None
     except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
+
+
+def check_auth(force: bool = False) -> bool:
+    """Return cached auth status, or run a fresh subprocess check if forced or uncached."""
+    global _auth_cache
+    if not force and _auth_cache is not None:
+        return _auth_cache
+    _auth_cache = get_local_github_token() is not None
+    return _auth_cache
 
 
 def spawn_windows_auth_terminal() -> None:

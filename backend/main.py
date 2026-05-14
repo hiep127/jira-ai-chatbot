@@ -5,6 +5,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -16,8 +17,18 @@ from backend.agent.llm_factory import build_llm
 logger = logging.getLogger(__name__)
 
 
+class ModelInfo(BaseModel):
+    id: str
+    name: str
+    vendor: str
+    tier: str
+    multiplier: float
+    is_other: bool
+
+
 class CompactRequest(BaseModel):
     thread_id: str
+    model_id: str = ""
 
 
 class CompactResponse(BaseModel):
@@ -32,6 +43,7 @@ class ChatRequest(BaseModel):
     mode: str = "TEAM"
     parent_link: str = ""
     custom_jql: str = ""
+    model_id: str = ""
 
 
 class ChatResponse(BaseModel):
@@ -63,6 +75,7 @@ async def lifespan(app: FastAPI):
         # Running as a PyInstaller bundle — sys.executable is the .exe, not Python,
         # so the stdio MCP subprocess cannot be started. Boot without tools.
         app.state.graph = build_graph([])
+        app.state.models_cache = None
         yield
     else:
         async with MultiServerMCPClient(
@@ -76,6 +89,7 @@ async def lifespan(app: FastAPI):
         ) as mcp_client:
             tools = mcp_client.get_tools()
             app.state.graph = build_graph(tools)
+            app.state.models_cache = None
             yield
 
 
@@ -93,10 +107,10 @@ async def health() -> HealthResponse:
 
 
 @app.get("/auth/github/status")
-async def github_auth_status() -> GitHubAuthStatusResponse:
-    from backend.utils.github_auth import get_local_github_token
-    token = await asyncio.to_thread(get_local_github_token)
-    return GitHubAuthStatusResponse(authenticated=token is not None)
+async def github_auth_status(force: bool = False) -> GitHubAuthStatusResponse:
+    from backend.utils.github_auth import check_auth
+    authenticated = await asyncio.to_thread(check_auth, force)
+    return GitHubAuthStatusResponse(authenticated=authenticated)
 
 
 @app.post("/auth/github/spawn-terminal")
@@ -112,11 +126,57 @@ async def spawn_github_terminal() -> GitHubSpawnTerminalResponse:
         )
 
 
+@app.get("/models", response_model=list[ModelInfo])
+async def list_models(refresh: bool = False, request: Request = None) -> list[ModelInfo]:
+    from backend.utils.github_auth import check_auth, get_local_github_token
+    if not await asyncio.to_thread(check_auth):
+        raise HTTPException(status_code=401, detail="GitHub CLI not authenticated.")
+
+    if not refresh and request.app.state.models_cache is not None:
+        return request.app.state.models_cache
+
+    token = await asyncio.to_thread(get_local_github_token)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://api.githubcopilot.com/models",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to reach Copilot API: {e}")
+
+    raw_models: list[dict] = r.json().get("models", [])
+
+    _PRIMARY_PREFIXES = ("claude-", "gpt-", "o")
+
+    def _map(m: dict) -> ModelInfo:
+        model_id = m.get("id", "")
+        return ModelInfo(
+            id=model_id,
+            name=m.get("name", model_id),
+            vendor=m.get("vendor", ""),
+            tier=m.get("billing_class", m.get("version_details", {}).get("model_picker_description", "standard")),
+            multiplier=float(m.get("multiplier", 1.0)),
+            is_other=not any(model_id.startswith(p) for p in _PRIMARY_PREFIXES),
+        )
+
+    models = [_map(m) for m in raw_models]
+
+    def _sort_key(m: ModelInfo) -> tuple:
+        return (0 if m.id == "gpt-4o" else 1, m.name.lower())
+
+    models.sort(key=_sort_key)
+    request.app.state.models_cache = models
+    return models
+
+
 @app.post("/chat")
 async def chat(body: ChatRequest, request: Request) -> ChatResponse:
-    from backend.utils.github_auth import get_local_github_token
-    token = await asyncio.to_thread(get_local_github_token)
-    if token is None:
+    from backend.utils.github_auth import check_auth
+    if not await asyncio.to_thread(check_auth):
         raise HTTPException(
             status_code=401,
             detail="GitHub CLI not authenticated. Run 'gh auth login' to authenticate.",
@@ -165,7 +225,7 @@ async def compact(body: CompactRequest, request: Request) -> CompactResponse:
 
     # ── Step 2: LLM summarization call ─────────────────────────────────────
     try:
-        llm = build_llm()
+        llm = build_llm(model_id=body.model_id)
         summary_prompt = (
             "Summarise the following conversation in 3-5 sentences. "
             "Preserve key facts, decisions, and open questions.\n\n"
