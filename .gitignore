@@ -41,3 +41,6 @@ skills-lock.json
 # Windows
 Thumbs.db
 Desktop.ini
+
+# Downloaded binaries (populated by build_release.py, not committed)
+tools/gh.exe

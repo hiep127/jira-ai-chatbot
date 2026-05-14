@@ -6,11 +6,20 @@ from pathlib import Path
 
 
 def _gh_exe() -> str:
-    """Return path to gh executable — bundled copy when frozen, PATH otherwise."""
+    """Return path to gh executable.
+
+    Search order:
+    1. Frozen (.exe): tools/gh.exe next to the executable (placed by build_release.py).
+    2. Dev mode: tools/gh.exe at the project root (downloaded by build_release.py).
+    3. Fallback: "gh" from the system PATH.
+    """
     if getattr(sys, "frozen", False):
         bundled = Path(sys.executable).parent / "tools" / "gh.exe"
-        if bundled.exists():
-            return str(bundled)
+    else:
+        # backend/utils/github_auth.py → ../../.. == project root
+        bundled = Path(__file__).parent.parent.parent / "tools" / "gh.exe"
+    if bundled.exists():
+        return str(bundled)
     return "gh"
 
 

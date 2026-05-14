@@ -39,13 +39,8 @@ def _check_prerequisites(root: Path) -> None:
         pass
 
 
-def _bundle_gh(tools_dir: Path) -> None:
-    """Download the latest gh.exe from GitHub releases into tools_dir."""
-    gh_dst = tools_dir / "gh.exe"
-    if gh_dst.exists():
-        print("  gh.exe already present — skipped download.")
-        return
-
+def _download_gh(dest: Path) -> None:
+    """Download the latest gh.exe from GitHub releases to dest."""
     print("  Fetching latest GitHub CLI release info...")
     req = urllib.request.Request(
         "https://api.github.com/repos/cli/cli/releases/latest",
@@ -65,11 +60,30 @@ def _bundle_gh(tools_dir: Path) -> None:
 
     with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
         gh_entry = next(n for n in zf.namelist() if n.endswith("bin/gh.exe"))
-        tools_dir.mkdir(parents=True, exist_ok=True)
-        with zf.open(gh_entry) as src, open(gh_dst, "wb") as dst:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(gh_entry) as src, open(dest, "wb") as dst:
             dst.write(src.read())
 
-    print(f"  gh.exe bundled → {gh_dst}")
+    print(f"  Downloaded → {dest}")
+
+
+def _bundle_gh(root: Path, dist_tools_dir: Path) -> None:
+    """Ensure gh.exe is in tools/ (project root) and copy it into the dist bundle.
+
+    Download order:
+      1. tools/gh.exe at the project root — shared by dev mode and builds.
+      2. Copy from there into dist_tools_dir so the frozen exe finds it.
+    """
+    src = root / "tools" / "gh.exe"
+    if not src.exists():
+        _download_gh(src)
+    else:
+        print("  gh.exe already in tools/ — skipped download.")
+
+    dst = dist_tools_dir / "gh.exe"
+    dist_tools_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    print(f"  gh.exe copied → {dst}")
 
 
 def main() -> None:
@@ -100,9 +114,9 @@ def main() -> None:
 
     print("[3/4] Bundling GitHub CLI (gh.exe)...")
     try:
-        _bundle_gh(tools_dir)
+        _bundle_gh(root, tools_dir)
     except Exception as exc:
-        print(f"  WARNING: could not download gh.exe: {exc}")
+        print(f"  WARNING: could not bundle gh.exe: {exc}")
         print("  Customers will need GitHub CLI installed manually.")
 
     print("[4/4] Copying wiki/...")
