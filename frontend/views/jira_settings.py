@@ -15,6 +15,7 @@ def open_jira_settings_dialog(
     page: ft.Page,
     state: dict[str, Any],
     on_settings_saved: Callable[[], None] | None = None,
+    on_auth_change: Callable[[], None] | None = None,
 ) -> None:
     profile_name_field = ft.TextField(
         label="Profile Name *",
@@ -76,6 +77,45 @@ def open_jira_settings_dialog(
         content_padding=ft.Padding(left=10, right=10, top=8, bottom=8),
     )
 
+    def _make_filter_row(field: str = "", value: str = "") -> ft.Row:
+        row: ft.Row = ft.Row(controls=[])
+
+        def _remove_row(e: ft.ControlEvent) -> None:
+            try:
+                filter_rows_column.controls.remove(row)
+                page.update()
+            except Exception as exc:
+                show_error_dialog(page, f"Could not remove filter row: {exc}")
+
+        row.controls = [
+            ft.Dropdown(
+                value=field or None,
+                options=[
+                    ft.dropdown.Option("Project"),
+                    ft.dropdown.Option("Assignee"),
+                    ft.dropdown.Option("Status"),
+                ],
+                expand=True,
+            ),
+            ft.Text("="),
+            ft.TextField(value=value, expand=True),
+            ft.IconButton(icon=ft.Icons.DELETE, on_click=_remove_row),
+        ]
+        return row
+
+    filter_rows_column = ft.Column(controls=[], spacing=8)
+    for k, v in state.get("filters", {}).items():
+        filter_rows_column.controls.append(_make_filter_row(k, v))
+
+    def _add_filter_row(e: ft.ControlEvent) -> None:
+        try:
+            filter_rows_column.controls.append(_make_filter_row())
+            page.update()
+        except Exception as exc:
+            show_error_dialog(page, f"Could not add filter row: {exc}")
+
+    add_filter_btn = ft.TextButton("+ Add Filter", on_click=_add_filter_row)
+
     async def on_save(e: ft.ControlEvent) -> None:
         if (
             not profile_name_field.value.strip()
@@ -94,10 +134,19 @@ def open_jira_settings_dialog(
             state["jira_env"]             = _parsed_jira_env
             state["parent_link"]          = parent_link_field.value.strip()
             state["custom_jql"]           = custom_jql_field.value.strip()
+            filters: dict[str, str] = {}
+            for row in filter_rows_column.controls:
+                key = (row.controls[0].value or "").strip()
+                val = (row.controls[2].value or "").strip()
+                if key and val:
+                    filters[key] = val
+            state["filters"] = filters
             pat = pat_field.value.strip()
             if pat:
                 set_jira_pat(pat)
-            dialog.open = False
+            page.pop_dialog()
+            if on_auth_change:
+                on_auth_change()
             if on_settings_saved:
                 on_settings_saved()
             page.update()
@@ -112,12 +161,14 @@ def open_jira_settings_dialog(
             )
 
     async def on_cancel(e: ft.ControlEvent) -> None:
-        dialog.open = False
+        page.pop_dialog()
+        if on_auth_change:
+            on_auth_change()
         page.update()
 
     async def open_model_config(e: ft.ControlEvent) -> None:
         try:
-            open_config_dialog(page)
+            open_config_dialog(page, on_closed=on_auth_change)
         except Exception as exc:
             print(f"[open_model_config] {exc}")
             show_error_dialog(
@@ -134,6 +185,8 @@ def open_jira_settings_dialog(
             pat_field,
             parent_link_field,
             custom_jql_field,
+            filter_rows_column,
+            add_filter_btn,
         ),
         actions=[
             ft.ElevatedButton("Save & Close", on_click=on_save),
@@ -143,9 +196,7 @@ def open_jira_settings_dialog(
         actions_alignment=ft.MainAxisAlignment.END,
     )
 
-    page.overlay.append(dialog)
-    dialog.open = True
-    page.update()
+    page.show_dialog(dialog)
 
 
 def _build_dialog_content(
@@ -153,6 +204,8 @@ def _build_dialog_content(
     pat_field: ft.TextField,
     parent_link_field: ft.TextField,
     custom_jql_field: ft.TextField,
+    filter_rows_column: ft.Column,
+    add_filter_btn: ft.TextButton,
 ) -> ft.Container:
     column = ft.Column(
         controls=[
@@ -167,6 +220,15 @@ def _build_dialog_content(
             ft.Divider(),
             ft.Text("Custom JQL Query", weight=ft.FontWeight.BOLD),
             custom_jql_field,
+            ft.Divider(),
+            ft.Row(
+                controls=[
+                    ft.Text("Filters", weight=ft.FontWeight.BOLD),
+                    add_filter_btn,
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            ),
+            filter_rows_column,
         ],
         scroll=ft.ScrollMode.AUTO,
         spacing=14,

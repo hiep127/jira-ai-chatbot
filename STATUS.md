@@ -59,9 +59,9 @@ Fallback: if any of the three MCP tools are missing (bundled `.exe` or MCP serve
 | File | Status | Notes |
 |---|---|---|
 | `frontend/main.py` | ✅ | Flet desktop app; starts backend in-process (thread); 120 s timeout; GitHub Copilot 401 → SnackBar redirect (no modal dialog) |
-| `frontend/views/config.py` | ✅ | Copilot-only dialog (dropdown/key_field removed); proactive auth check on open via `page.run_task`; on_save guarded with try/except/finally — button disabled on entry, re-enabled in finally, show_error_dialog on failure; `on_save` + `on_close` converted to `async def`; `page.run_task` call fixed (removed `()` — passes callable reference, not coroutine object) |
-| `frontend/views/dialogs.py` | ✅ | Shared `show_error_dialog` helper — breaks circular import between `config.py` and `jira_settings.py` |
-| `frontend/views/jira_settings.py` | ✅ | `open_model_config` patched with try/except → `show_error_dialog` on failure; `on_save`, `on_cancel`, `open_model_config` converted to `async def` (Flet async-mode handler compliance) |
+| `frontend/views/config.py` | ✅ | Config dialog \| Dialog wrapper for credentials and Model config (`github_copilot` explicit dropdown check); migrated to `page.open()`/`page.close()` API |
+| `frontend/views/dialogs.py` | ✅ | Global alerts \| `show_error_dialog` centralized exception catcher; migrated to `page.open()`/`page.close()` API |
+| `frontend/views/jira_settings.py` | ✅ | Settings dialog \| Proactive CLI terminal for unauthenticated Copilot SDK users; JQL raw input string fallback; Dynamic Filter Builder UI (`filter_rows_column`, `_make_filter_row()`, `_add_filter_row()`); `on_save` index-based extraction fix; migrated to `page.open()`/`page.close()` API |
 
 **UI features:**
 - Chat message bubbles (user / assistant)

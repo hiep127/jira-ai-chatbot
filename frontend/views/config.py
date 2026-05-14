@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import flet as ft
 import httpx
 
@@ -7,7 +9,7 @@ from config.providers import save_active_provider
 from frontend.views.dialogs import show_error_dialog
 
 
-def open_config_dialog(page: ft.Page) -> None:
+def open_config_dialog(page: ft.Page, on_closed: Callable[[], None] | None = None) -> None:
     # --- Controls (defined first so all handlers can reference them) ---
     copilot_status_ok = ft.Text(
         "✅ GitHub Copilot is authenticated and ready.",
@@ -119,17 +121,21 @@ def open_config_dialog(page: ft.Page) -> None:
         ),
         actions=[save_btn, close_btn],
         actions_alignment=ft.MainAxisAlignment.END,
+        on_dismiss=lambda e: on_closed() if on_closed else None,
     )
 
     async def on_close(e: ft.ControlEvent) -> None:
-        dialog.open = False
-        page.update()
+        try:
+            page.pop_dialog()
+            page.update()
+            if on_closed:
+                on_closed()
+        except Exception as exc:
+            show_error_dialog(page, f"Error closing dialog: {exc}")
 
     close_btn.on_click = on_close
 
     # --- Initialize state and show ---
     set_status("Checking authentication…")
-    page.overlay.append(dialog)
-    dialog.open = True
-    page.update()
+    page.show_dialog(dialog)
     page.run_task(_check_copilot_status)

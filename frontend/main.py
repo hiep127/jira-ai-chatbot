@@ -82,6 +82,26 @@ async def main(page: ft.Page) -> None:
 
     message_list = ft.ListView(expand=True, spacing=8, padding=10, auto_scroll=True)
 
+    auth_guard_container = ft.Container(
+        content=ft.Column(
+            controls=[
+                ft.Icon(ft.Icons.SETTINGS, size=48, color=ft.Colors.ORANGE_400),
+                ft.Text(
+                    "GitHub Copilot is not authenticated. Please click the "
+                    "Settings icon → Model Settings to set up your Copilot account first.",
+                    text_align=ft.TextAlign.CENTER,
+                    color=ft.Colors.GREY_400,
+                    size=14,
+                ),
+            ],
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=16,
+        ),
+        visible=False,
+        expand=True,
+        alignment=ft.Alignment.CENTER,
+    )
+
     async def process_chat_message(prompt_text: str) -> None:
         input_field.disabled = True
         send_btn.disabled = True
@@ -112,14 +132,15 @@ async def main(page: ft.Page) -> None:
                 message_list.controls.remove(thinking)
 
                 if r.status_code == 401 and "GitHub CLI" in detail:
-                    page.snack_bar = ft.SnackBar(
-                        ft.Text(
-                            "GitHub Copilot is not authenticated. "
-                            "Re-authenticate in Settings → Model Settings."
-                        ),
-                        bgcolor=ft.Colors.ORANGE_700,
+                    page.show_dialog(
+                        ft.SnackBar(
+                            ft.Text(
+                                "GitHub Copilot is not authenticated. "
+                                "Re-authenticate in Settings → Model Settings."
+                            ),
+                            bgcolor=ft.Colors.ORANGE_700,
+                        )
                     )
-                    page.snack_bar.open = True
                 else:
                     _status_hints: dict[int, str] = {
                         401: "Token expired or invalid — update your PAT in Settings → Jira Personal Access Token.",
@@ -234,9 +255,30 @@ async def main(page: ft.Page) -> None:
 
     title_text = ft.Text("AI Agent", size=20, weight=ft.FontWeight.BOLD)
 
-    def on_settings(e: ft.ControlEvent) -> None:
+    async def refresh_auth_state() -> None:
         try:
-            open_jira_settings_dialog(page, app_state, on_settings_saved=rebuild_sidebar)
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get("http://localhost:8000/auth/github/status")
+            authenticated = r.json()["authenticated"]
+        except Exception:
+            authenticated = False
+
+        auth_guard_container.visible = not authenticated
+        message_list.visible = authenticated
+        input_field.disabled = not authenticated
+        send_btn.disabled = not authenticated
+        compact_btn.disabled = not authenticated
+        summary_btn.disabled = not authenticated
+        page.update()
+
+    async def on_settings(e: ft.ControlEvent) -> None:
+        try:
+            open_jira_settings_dialog(
+                page,
+                app_state,
+                on_settings_saved=rebuild_sidebar,
+                on_auth_change=lambda: page.run_task(refresh_auth_state),
+            )
         except Exception as exc:
             print(f"[on_settings] {exc}")
             show_error_dialog(
@@ -250,6 +292,8 @@ async def main(page: ft.Page) -> None:
         on_click=on_settings,
     )
 
+    await refresh_auth_state()
+
     page.add(
         ft.Row(
             controls=[
@@ -262,6 +306,7 @@ async def main(page: ft.Page) -> None:
                 ft.Column(
                     controls=[
                         ft.Row([title_text, summary_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        auth_guard_container,
                         message_list,
                         ft.Row([input_field, compact_btn, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ],

@@ -36,6 +36,6 @@ def spawn_windows_auth_terminal() -> None:
     """
     gh = _gh_exe()
     subprocess.Popen(
-        ["cmd.exe", "/c", f'"{gh}" auth login & echo. & pause'],
+        f'cmd.exe /c ""{gh}" auth login & echo. & pause"',
         creationflags=subprocess.CREATE_NEW_CONSOLE,
     )
