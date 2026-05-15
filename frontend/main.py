@@ -258,6 +258,7 @@ async def main(page: ft.Page) -> None:
         on_click=on_daily_summary,
     )
 
+    title_text = ft.Text("AI Agent", size=20, weight=ft.FontWeight.BOLD)
     model_chip_label = ft.Text("Select model", size=13)
     model_chip = ft.TextButton(
         content=model_chip_label,
@@ -320,10 +321,10 @@ async def main(page: ft.Page) -> None:
                 ),
                 ft.Column(
                     controls=[
-                        ft.Row([model_chip, summary_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        ft.Row([title_text, summary_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                         auth_guard_container,
                         message_list,
-                        ft.Row([input_field, compact_btn, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        ft.Row([model_chip, input_field, compact_btn, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ],
                     expand=True,
                 ),

@@ -148,7 +148,8 @@ async def list_models(refresh: bool = False, request: Request = None) -> list[Mo
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to reach Copilot API: {e}")
 
-    raw_models: list[dict] = r.json().get("models", [])
+    body = r.json()
+    raw_models: list[dict] = body.get("data", body.get("models", []))
 
     _PRIMARY_PREFIXES = ("claude-", "gpt-", "o")
 
@@ -158,7 +159,7 @@ async def list_models(refresh: bool = False, request: Request = None) -> list[Mo
             id=model_id,
             name=m.get("name", model_id),
             vendor=m.get("vendor", ""),
-            tier=m.get("billing_class", m.get("version_details", {}).get("model_picker_description", "standard")),
+            tier=m.get("billing_class") or m.get("model_picker_description") or "standard",
             multiplier=float(m.get("multiplier", 1.0)),
             is_other=not any(model_id.startswith(p) for p in _PRIMARY_PREFIXES),
         )

@@ -21,7 +21,8 @@ def open_model_picker(
     gear_btn = ft.IconButton(ft.Icons.SETTINGS, tooltip="Auth settings")
     spinner = ft.ProgressRing(visible=False, width=24, height=24, stroke_width=2)
     model_list = ft.ListView(expand=True, spacing=0, height=320)
-    others_toggle = ft.TextButton("▶ Other Models (0)")
+    _others_label = ft.Text("▶ Other Models (0)", size=13)
+    others_toggle = ft.TextButton(content=_others_label)
 
     dialog = ft.AlertDialog(
         modal=True,
@@ -78,7 +79,7 @@ def open_model_picker(
                 model_list.controls.append(_build_row(m))
 
         arrow = "▼" if _state["show_others"] else "▶"
-        others_toggle.text = f"{arrow} Other Models ({len(others)})"
+        _others_label.value = f"{arrow} Other Models ({len(others)})"
         page.update()
 
     def _toggle_others() -> None:
@@ -108,7 +109,7 @@ def open_model_picker(
             page.update()
 
     search_field.on_change = lambda e: _rebuild_list()
-    refresh_btn.on_click = lambda e: page.run_task(lambda: _fetch_models(refresh=True))
+    refresh_btn.on_click = lambda e: page.run_task(_fetch_models, True)
     gear_btn.on_click = lambda e: open_config_dialog(page)
     others_toggle.on_click = lambda e: _toggle_others()
 
