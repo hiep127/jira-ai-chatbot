@@ -1,0 +1,564 @@
+#!/home/worker/mcp-env/bin/python3
+import os, zipfile, json, subprocess, shutil
+from pathlib import Path
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
+from jira import JIRA
+from pydantic import BaseModel, Field
+
+# Setup
+env_path = os.path.join(os.path.dirname(__file__), "jira_server.env")
+load_dotenv(env_path)
+
+mcp = FastMCP("jira-harness")
+WORKSPACE_ROOT = "/home/worker/jira_workspace"
+AGENT_WIKI_ROOT = "/home/worker/Copilot_Memory/wiki/topics"
+
+# --- MULTI-INSTANCE CONFIGURATION WITH BOUND FILTERS ---
+JIRA_CONFIGS = {
+    "SPAWS": {
+        "url": os.getenv("CLIENT_JIRA_HOST"),
+        "token": os.getenv("CLIENT_JIRA_TOKEN"),
+        "filters": {
+            "TEAM": (
+                'assignee IN (LGEJ-LGEJ731, LGEJ-LGEJ1122, LGEJ-LGEJ140, LGEJ-LGEJ1162) '
+                'AND resolution = Unresolved '
+                'AND status NOT IN ("Closed", "Integrated", "Done")'
+            ),
+            "PERSONAL": 'assignee = currentUser() AND statusCategory != "Done"'
+        }
+    },
+    "LGE": {
+        "url": os.getenv("LGE_JIRA_HOST"),
+        "token": os.getenv("LGE_JIRA_TOKEN"),
+        "options": {"rest_api_version": "2"},
+        "filters": {
+            "TEAM": (
+                'assignee IN (hang2.le, hiep.tran, duynp1.nguyen, hieu.dotrung, hung4.nguyenhoa) '
+                'AND resolution = Unresolved '
+                'AND status NOT IN ("Closed", "Integrated", "Merged_VLM", "Done")'
+            ),
+            "PERSONAL": 'assignee = currentUser() AND statusCategory != "Done"'
+        }
+    },
+    "DEFAULT": {
+        "url": os.getenv("CLIENT_JIRA_HOST"),
+        "token": os.getenv("CLIENT_JIRA_TOKEN")
+    }
+}
+
+_client_cache = {}
+PREFIX_TO_INSTANCE = {
+    "DVDNAIVI": "LGE", "AUDIODV": "LGE", "REAVN": "LGE", "DNSD": "LGE", "MMCAAFW": "LGE",
+    "C2BST": "SPAWS", "C2LST": "SPAWS", "SPAWS": "SPAWS", "LGE": "LGE",
+}
+
+def get_jira_client(ticket_key: str = None, prefix: str = None):
+    """Factory: Selects the correct JIRA instance based on ticket prefix."""
+    proj_prefix = prefix or (ticket_key.split('-')[0].upper() if ticket_key else "DEFAULT")
+    instance_key = PREFIX_TO_INSTANCE.get(proj_prefix, "DEFAULT")
+    config = JIRA_CONFIGS.get(instance_key, JIRA_CONFIGS["DEFAULT"])
+    
+    url = config["url"]
+    if url not in _client_cache:
+        options = config.get("options", {"rest_api_version": "2"})
+        _client_cache[url] = JIRA(server=url, token_auth=config["token"], options=options)
+    return _client_cache[url]
+
+
+# --- INPUT SCHEMAS ---
+
+class BatchScanArgs(BaseModel):
+    prefixes: list[str] = Field(default=["SPAWS", "LGE"], description="Profiles to scan.")
+    mode: str = Field(default="TEAM", description="'TEAM' or 'PERSONAL'")
+    sort_by_age: bool = Field(default=True, description="True for oldest first.")
+
+class TicketMetadataArgs(BaseModel):
+    ticket_key: str = Field(..., description="The Jira ticket key.")
+    comment_limit: int = Field(default=15, description="Number of recent comments to fetch.")
+
+class GrepLogsArgs(BaseModel):
+    ticket_key: str = Field(..., description="The Jira ticket key.")
+    pattern: str = Field(..., description="Regex or string pattern to search for.")
+
+class ReadLogTailArgs(BaseModel):
+    ticket_key: str = Field(..., description="The Jira ticket key.")
+    relative_path: str = Field(..., description="Path to the log file relative to the ticket workspace.")
+    lines: int = Field(default=100, description="Number of lines to read from the end.")
+
+class FetchDataArgs(BaseModel):
+    ticket_key: str = Field(..., description="The Jira ticket key to download attachments for.")
+    password: str = Field(default="", description="Optional password for encrypted/password-protected archives.")
+    keep_files: list[str] = Field(default=[], description="List of specific filenames to keep (e.g., ['adb_logcat_2026-04-21-193617.log', 'adb_logcat_2026-04-21-195813.log']). If empty, keeps only .log/.txt/.out files and deletes everything else.")
+
+class SaveSummaryArgs(BaseModel):
+    ticket_key: str = Field(..., description="The Jira ticket key.")
+    filename: str = Field(..., description="Filename to save within the ticket workspace.")
+    content: str = Field(..., description="Content of the file.")
+
+class SavePatternArgs(BaseModel):
+    topic_folder: str = Field(..., description="Wiki folder (e.g., 'Common_Patterns').")
+    filename: str = Field(..., description="Markdown filename (e.g., 'audio_fix.md').")
+    content: str = Field(..., description="The markdown content.")
+
+class CloneTicketArgs(BaseModel):
+    ticket_key: str = Field(..., description="The source Jira ticket key to clone.")
+    target_project: str = Field(default="REAVN", description="The target project key in LGE.")
+
+class SearchLogsFromTimestampArgs(BaseModel):
+    ticket_key: str = Field(..., description="The Jira ticket key.")
+    timestamp: str = Field(..., description="Start timestamp (e.g., '04-22 21:42:46' or '21:42:46')")
+    line_count: int = Field(default=100, description="Number of lines to return.")
+
+class SearchLogsTimestampWithTagArgs(BaseModel):
+    ticket_key: str = Field(..., description="The Jira ticket key.")
+    timestamp: str = Field(..., description="Start timestamp (e.g., '04-22 21:42:46' or '21:42:46')")
+    tags: str = Field(..., description="Log level tags to filter (comma-separated, e.g., 'I/,E/,W/' or 'ERROR,WARNING')")
+    line_count: int = Field(default=100, description="Number of lines to return.")
+
+class SearchLogsTimestampWithTextArgs(BaseModel):
+    ticket_key: str = Field(..., description="The Jira ticket key.")
+    timestamp: str = Field(..., description="Start timestamp (e.g., '04-22 21:42:46' or '21:42:46')")
+    search_text: str = Field(..., description="Text to search for (case-insensitive)")
+    line_count: int = Field(default=100, description="Maximum number of matching lines to return.")
+
+
+# --- TOOLS ---
+
+@mcp.tool()
+def get_tickets_by_batch(args: BatchScanArgs) -> str:
+    """Orchestrator Tool: Scans multiple JIRA instances using filters bound to each profile."""
+    try:
+        all_results = {}
+        order_clause = "ORDER BY created ASC" if args.sort_by_age else "ORDER BY updated DESC"
+
+        for prefix in args.prefixes:
+            config = JIRA_CONFIGS.get(prefix)
+            if not config:
+                all_results[prefix] = {"error": f"Profile '{prefix}' not found."}
+                continue
+
+            try:
+                jira = get_jira_client(prefix=prefix)
+                jql_base = config["filters"].get(args.mode.upper())
+                
+                if args.mode.upper() == "TEAM" and not jql_base:
+                    jql_base = config["filters"].get("PERSONAL")
+                
+                jql = f"{jql_base} {order_clause}"
+                issues = jira.search_issues(jql, maxResults=30)
+                
+                all_results[prefix] = [
+                    {"key": i.key, "summary": i.fields.summary, "created": i.fields.created} 
+                    for i in issues
+                    if not i.fields.summary.startswith("CCC-")
+                ]
+            except Exception as e:
+                all_results[prefix] = {"error": str(e)}
+
+        return json.dumps({"status": "SUCCESS", "scan_mode": args.mode.upper(), "data": all_results}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "ERROR", "message": str(e), "retryable": False}, indent=2)
+
+
+@mcp.tool()
+def fetch_ticket_metadata(args: TicketMetadataArgs) -> str:
+    """Daily Worker Tool: Lightweight fetch of text/comments only. Instance-aware."""
+    try:
+        jira = get_jira_client(ticket_key=args.ticket_key)
+        issue = jira.issue(args.ticket_key)
+        all_comments = jira.comments(issue)
+        recent = all_comments[-args.comment_limit:] if all_comments else []
+        
+        assignee_field = issue.fields.assignee
+        assignee = assignee_field.displayName if assignee_field else "Unassigned"
+
+        data = {
+            "key": issue.key,
+            "status": issue.fields.status.name,
+            "assignee": assignee,
+            "summary": issue.fields.summary,
+            "description": issue.fields.description or "No description.",
+            "comments": [{"author": c.author.displayName, "body": c.body, "date": c.created} for c in recent]
+        }
+        return json.dumps({"status": "SUCCESS", "data": data}, indent=2)
+    except Exception as e:
+        retryable = "timeout" in str(e).lower() or "connection" in str(e).lower()
+        return json.dumps({"status": "ERROR", "message": str(e), "retryable": retryable}, indent=2)
+
+
+@mcp.tool()
+def grep_logs(args: GrepLogsArgs) -> str:
+    """Recursively searches logs for a specific error/timestamp."""
+    try:
+        target_path = os.path.join(WORKSPACE_ROOT, args.ticket_key)
+        # Use --text (-a) to force grep to treat files as text, handles CRLF and binary-looking files.
+        # Use binary capture (text=False) + explicit UTF-8 decode with errors='replace' to avoid
+        # UnicodeDecodeError on files with CRLF line terminators or non-UTF-8 bytes.
+        cmd = ["grep", "-r", "-i", "--text", "-A", "2", "-B", "2", args.pattern, target_path]
+        result = subprocess.run(cmd, capture_output=True)
+        out = result.stdout[:8000].decode('utf-8', errors='replace') if result.stdout else "No matches found."
+        return json.dumps({"status": "SUCCESS", "data": out}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "ERROR", "message": str(e), "retryable": False}, indent=2)
+
+
+@mcp.tool()
+def read_log_tail(args: ReadLogTailArgs) -> str:
+    """Reads the end of a specific log file."""
+    try:
+        full_path = os.path.normpath(os.path.join(WORKSPACE_ROOT, args.ticket_key, args.relative_path))
+        if not full_path.startswith(WORKSPACE_ROOT): 
+            return json.dumps({"status": "ERROR", "message": "Path Escape detected.", "retryable": False})
+        
+        with open(full_path, 'r', errors='ignore') as f:
+            content = f.readlines()
+            out = "".join(content[-args.lines:])
+            return json.dumps({"status": "SUCCESS", "data": out}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "ERROR", "message": str(e), "retryable": False}, indent=2)
+
+
+@mcp.tool()
+def fetch_and_prepare_data(args: FetchDataArgs) -> str:
+    """Downloads and recursively extracts nested logs/zips for deep diagnostics.
+    
+    Default behavior: Keeps only .log, .txt, .out files and deletes non-log files (videos, binaries, archives).
+    If keep_files is specified, only those files are kept and everything else is deleted.
+    Empty directories are removed after cleanup."""
+    try:
+        jira = get_jira_client(ticket_key=args.ticket_key)
+        ticket_dir = os.path.join(WORKSPACE_ROOT, args.ticket_key)
+        os.makedirs(ticket_dir, exist_ok=True)
+        
+        # Download attachments directly to the ticket directory
+        issue = jira.issue(args.ticket_key)
+        for a in issue.fields.attachment:
+            dest = os.path.join(ticket_dir, a.filename)
+            with open(dest, "wb") as f: 
+                f.write(a.get())
+        
+        # Recursive extraction logic
+        processed_archives = set()
+        extracted_something = True
+        
+        while extracted_something:
+            extracted_something = False
+            
+            # Use list() to snapshot the directory state before we start creating/deleting files
+            for file_path in list(Path(ticket_dir).rglob("*")):
+                if not file_path.is_file() or str(file_path) in processed_archives:
+                    continue
+                    
+                fname = file_path.name.lower()
+                is_archive = fname.endswith(".7z.001") or fname.endswith(".zip.001") or (fname.endswith(".7z") and ".7z." not in fname) or (fname.endswith(".zip") and ".zip." not in fname)
+                
+                if is_archive:
+                    processed_archives.add(str(file_path)) 
+                    try:
+                        # Use 7z for ALL archives. It handles Deflate64 and weird encodings natively.
+                        cmd = ["7z", "x", str(file_path), f"-o{file_path.parent}", "-y"]
+                        if args.password:
+                            cmd.insert(3, f"-p{args.password}")
+                        
+                        result = subprocess.run(
+                            cmd,
+                            check=True, 
+                            capture_output=True,
+                            stdin=subprocess.DEVNULL,  # Prevent waiting for interactive password input
+                            timeout=60
+                        )
+                        file_path.unlink() # Delete archive to save space
+                        extracted_something = True # Trigger another loop to find newly revealed zips
+                        
+                    except subprocess.CalledProcessError as e:
+                        stderr_msg = e.stderr.decode(errors='ignore')
+                        stdout_msg = e.stdout.decode(errors='ignore')
+                        combined_msg = stderr_msg + stdout_msg
+                        
+                        # Detect password-protected archive
+                        password_keywords = ["password", "encrypted", "CRC failed", "unsupported compression method", "Wrong password"]
+                        is_password_error = any(kw.lower() in combined_msg.lower() for kw in password_keywords)
+                        
+                        if is_password_error:
+                            # Terminate immediately and ask for password
+                            raise ValueError(f"EXTRACTION_PASSWORD_REQUIRED: {file_path.name} is password-protected. Please provide password.")
+                        
+                        # For other errors, continue to next file
+                        print(f"Warning: Failed to extract {file_path.name} - {stderr_msg[:200]}")
+                        pass
+                    except subprocess.TimeoutExpired:
+                        # If timeout occurs and password was not provided, likely password-protected
+                        if not args.password:
+                            raise ValueError(f"EXTRACTION_PASSWORD_REQUIRED: {file_path.name} extraction timeout (password likely required).")
+                        print(f"Warning: Extraction timeout for {file_path.name}")
+                        pass
+
+        # Delete all files except those in keep_files (if specified)
+        # If keep_files is empty, keep only log files; otherwise keep only specified files
+        kept_files = []
+        if args.keep_files:
+            # User explicitly specified which files to keep
+            for p in Path(ticket_dir).rglob("*"):
+                if p.is_file():
+                    # Check if filename matches any in keep_files
+                    if p.name in args.keep_files:
+                        kept_files.append(p.name)
+                    else:
+                        # Delete files not in keep_files
+                        p.unlink()
+            
+            # Warn if some requested files were not found
+            not_found = set(args.keep_files) - set(kept_files)
+            if not_found:
+                return json.dumps({
+                    "status": "WARNING",
+                    "message": f"Some requested files were not found: {list(not_found)}",
+                    "kept_files": kept_files,
+                    "retryable": False
+                }, indent=2)
+        else:
+            # Default behavior: keep log files, delete everything else
+            log_extensions = {".log", ".txt", ".out"}
+            for p in Path(ticket_dir).rglob("*"):
+                if p.is_file():
+                    if p.suffix.lower() in log_extensions:
+                        kept_files.append(p.name)
+                    else:
+                        # Delete non-log files (archives, videos, binary dumps, etc.)
+                        try:
+                            p.unlink()
+                        except Exception:
+                            pass
+        
+        # Build Manifest (only for kept files)
+        manifest = {"bugreports": [], "driver_logs": [], "other": []}
+        for p in Path(ticket_dir).rglob("*"):
+            if p.is_file():  # Only files, not directories
+                # Skip directories
+                if p.name not in kept_files and not any(p.name == kf for kf in kept_files):
+                    continue
+                    
+                rel = f"./{p.relative_to(ticket_dir)}"
+                if "bugreport" in p.name.lower(): 
+                    manifest["bugreports"].append({"name": p.name, "path": rel})
+                elif "driver" in p.name.lower(): 
+                    manifest["driver_logs"].append({"name": p.name, "path": rel})
+                else: 
+                    manifest["other"].append({"name": p.name, "path": rel})
+        
+        # Clean up empty directories
+        for p in sorted(Path(ticket_dir).rglob("*"), reverse=True):
+            if p.is_dir():
+                try:
+                    p.rmdir()  # Only removes if empty
+                except OSError:
+                    pass  # Directory not empty, keep it
+
+        return json.dumps({"status": "SUCCESS", "manifest": manifest}, indent=2)
+    except Exception as e:
+        error_str = str(e).lower()
+        retryable = "timeout" in error_str or "connection" in error_str
+        password_required = "extraction_password_required" in error_str
+        return json.dumps({"status": "ERROR", "message": str(e), "retryable": retryable, "password_required": password_required}, indent=2)
+
+
+@mcp.tool()
+def search_logs_from_timestamp(args: SearchLogsFromTimestampArgs) -> str:
+    """Extracts logs starting from a specific timestamp. Useful for analyzing events after a known time."""
+    try:
+        ticket_dir = os.path.join(WORKSPACE_ROOT, args.ticket_key)
+        results = []
+        
+        for log_file in Path(ticket_dir).rglob("*.txt"):
+            with open(log_file, "r", errors='ignore') as f:
+                lines = f.readlines()
+            
+            # Find start line matching the timestamp
+            for idx, line in enumerate(lines):
+                if args.timestamp in line:
+                    # Extract lines from this point onwards
+                    extracted = lines[idx:idx+args.line_count]
+                    results.append({
+                        "file": log_file.name,
+                        "start_line": idx + 1,
+                        "lines": "".join(extracted).strip()
+                    })
+                    break
+        
+        if not results:
+            return json.dumps({"status": "NO_MATCHES", "message": f"Timestamp '{args.timestamp}' not found in logs"})
+        
+        return json.dumps({"status": "SUCCESS", "results": results}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "ERROR", "message": str(e)})
+
+
+@mcp.tool()
+def search_logs_timestamp_with_tags(args: SearchLogsTimestampWithTagArgs) -> str:
+    """Extracts logs starting from a timestamp, filtered by log level tags (I/, E/, W/, D/, V/)."""
+    try:
+        ticket_dir = os.path.join(WORKSPACE_ROOT, args.ticket_key)
+        tags = [t.strip() for t in args.tags.split(",")]
+        results = []
+        
+        for log_file in Path(ticket_dir).rglob("*.txt"):
+            with open(log_file, "r", errors='ignore') as f:
+                lines = f.readlines()
+            
+            # Find start line matching the timestamp
+            start_idx = None
+            for idx, line in enumerate(lines):
+                if args.timestamp in line:
+                    start_idx = idx
+                    break
+            
+            if start_idx is None:
+                continue
+            
+            # Filter lines by tags starting from timestamp
+            filtered_lines = []
+            for line in lines[start_idx:start_idx+args.line_count]:
+                if any(tag in line for tag in tags):
+                    filtered_lines.append(line)
+                if len(filtered_lines) >= args.line_count:
+                    break
+            
+            if filtered_lines:
+                results.append({
+                    "file": log_file.name,
+                    "start_line": start_idx + 1,
+                    "tags_filter": args.tags,
+                    "lines": "".join(filtered_lines).strip()
+                })
+        
+        if not results:
+            return json.dumps({"status": "NO_MATCHES", "message": f"Timestamp '{args.timestamp}' with tags {args.tags} not found"})
+        
+        return json.dumps({"status": "SUCCESS", "results": results}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "ERROR", "message": str(e)})
+
+
+@mcp.tool()
+def search_logs_timestamp_with_text(args: SearchLogsTimestampWithTextArgs) -> str:
+    """Extracts logs starting from a timestamp, searching for specific text."""
+    try:
+        ticket_dir = os.path.join(WORKSPACE_ROOT, args.ticket_key)
+        results = []
+        search_lower = args.search_text.lower()
+        
+        for log_file in Path(ticket_dir).rglob("*.txt"):
+            with open(log_file, "r", errors='ignore') as f:
+                lines = f.readlines()
+            
+            # Find start line matching the timestamp
+            start_idx = None
+            for idx, line in enumerate(lines):
+                if args.timestamp in line:
+                    start_idx = idx
+                    break
+            
+            if start_idx is None:
+                continue
+            
+            # Search for text starting from timestamp
+            matching_lines = []
+            for line in lines[start_idx:start_idx+args.line_count*10]:  # Search wider range
+                if search_lower in line.lower():
+                    matching_lines.append(line)
+                if len(matching_lines) >= args.line_count:
+                    break
+            
+            if matching_lines:
+                results.append({
+                    "file": log_file.name,
+                    "start_line": start_idx + 1,
+                    "search_text": args.search_text,
+                    "matches_count": len(matching_lines),
+                    "lines": "".join(matching_lines).strip()
+                })
+        
+        if not results:
+            return json.dumps({"status": "NO_MATCHES", "message": f"Text '{args.search_text}' after timestamp '{args.timestamp}' not found"})
+        
+        return json.dumps({"status": "SUCCESS", "results": results}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "ERROR", "message": str(e)})
+
+
+@mcp.tool()
+def save_summary_to_linux(args: SaveSummaryArgs) -> str:
+    """Writes diagnostic reports locally to the isolated ticket folder."""
+    try:
+        path = os.path.normpath(os.path.join(WORKSPACE_ROOT, args.ticket_key, args.filename))
+        if not path.startswith(WORKSPACE_ROOT):
+            return json.dumps({"status": "ERROR", "message": "Path traversal detected.", "retryable": False})
+            
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f: 
+            f.write(args.content)
+        return json.dumps({"status": "SUCCESS", "message": f"Saved to {path}"})
+    except Exception as e: 
+        return json.dumps({"status": "ERROR", "message": str(e), "retryable": False})
+
+
+@mcp.tool()
+def save_pattern_to_memory(args: SavePatternArgs) -> str:
+    """Saves learned patterns to the agent's localized long-term Wiki memory."""
+    try:
+        path = os.path.normpath(os.path.join(AGENT_WIKI_ROOT, args.topic_folder, args.filename))
+        if not path.startswith(AGENT_WIKI_ROOT):
+            return json.dumps({"status": "ERROR", "message": "Path traversal blocked. Stay in wiki bounds.", "retryable": False})
+            
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f: 
+            f.write(args.content)
+            
+        return json.dumps({
+            "status": "SUCCESS", 
+            "message": f"Learned pattern successfully committed to memory at {path}"
+        })
+    except Exception as e:
+        return json.dumps({"status": "ERROR", "message": str(e), "retryable": False})
+
+
+@mcp.tool()
+def clone_ticket_from_spaws_to_lge(args: CloneTicketArgs) -> str:
+    """Clones a ticket across instances, appending comments directly to the description."""
+    try:
+        source_jira = get_jira_client(prefix="SPAWS")
+        target_jira = get_jira_client(prefix="LGE")
+        
+        issue = source_jira.issue(args.ticket_key)
+        new_issue = target_jira.create_issue(
+            project=args.target_project,
+            summary=issue.fields.summary,
+            description=issue.fields.description or "No description provided.",
+            issuetype={"name": issue.fields.issuetype.name}
+        )
+        
+        # Append comments cleanly
+        all_comments = source_jira.comments(issue)
+        if all_comments:
+            comments_text = "\n".join([
+                f"[{c.created}] {c.author.displayName}:\n{c.body}\n"
+                for c in all_comments
+            ])
+            updated_description = f"{new_issue.fields.description}\n\n---\n**Comments from {args.ticket_key}:**\n{comments_text}"
+            new_issue.update(description=updated_description)
+
+        return json.dumps({
+            "status": "SUCCESS",
+            "source_ticket": args.ticket_key,
+            "cloned_ticket_key": new_issue.key,
+            "target_project": args.target_project
+        }, indent=2)
+
+    except Exception as e:
+        retryable = "timeout" in str(e).lower() or "connection" in str(e).lower()
+        return json.dumps({"status": "ERROR", "message": str(e), "retryable": retryable}, indent=2)
+
+
+if __name__ == "__main__":
+    mcp.run()

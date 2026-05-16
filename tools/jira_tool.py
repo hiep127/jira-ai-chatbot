@@ -1,78 +1,62 @@
 #!/home/worker/mcp-env/bin/python3
 import os, zipfile, json, subprocess, shutil
 from pathlib import Path
-from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from jira import JIRA
 from pydantic import BaseModel, Field
-
-# Setup
-env_path = os.path.join(os.path.dirname(__file__), "jira_server.env")
-load_dotenv(env_path)
 
 mcp = FastMCP("jira-harness")
 WORKSPACE_ROOT = "/home/worker/jira_workspace"
 AGENT_WIKI_ROOT = "/home/worker/Copilot_Memory/wiki/topics"
 
-# --- MULTI-INSTANCE CONFIGURATION WITH BOUND FILTERS ---
-JIRA_CONFIGS = {
-    "SPAWS": {
-        "url": os.getenv("CLIENT_JIRA_HOST"),
-        "token": os.getenv("CLIENT_JIRA_TOKEN"),
-        "filters": {
-            "TEAM": (
-                'assignee IN (LGEJ-LGEJ731, LGEJ-LGEJ1122, LGEJ-LGEJ140) '
-                'AND resolution = Unresolved'
-            ),
-            "PERSONAL": 'assignee = currentUser() AND statusCategory != "Done"'
-        }
-    },
-    "LGE": {
-        "url": os.getenv("LGE_JIRA_HOST"),
-        "token": os.getenv("LGE_JIRA_TOKEN"),
-        "options": {"rest_api_version": "2"},
-        "filters": {
-            "TEAM": (
-                'assignee IN (hang2.le, hiep.tran, duynp1.nguyen) '
-                'AND resolution = Unresolved'
-            ),
-            "PERSONAL": 'assignee = currentUser() AND statusCategory != "Done"'
-        }
-    },
-    "DEFAULT": {
-        "url": os.getenv("CLIENT_JIRA_HOST"),
-        "token": os.getenv("CLIENT_JIRA_TOKEN")
-    }
+_raw = os.getenv("JIRA_PROFILES_JSON", "[]")
+try:
+    _profile_list = json.loads(_raw)
+except json.JSONDecodeError:
+    _profile_list = []
+
+JIRA_CONFIGS: dict[str, dict] = {
+    p["name"]: {"url": p["host"], "token": p.get("token", ""), "jql": p.get("jql", "")}
+    for p in _profile_list
+    if p.get("name") and p.get("host")
 }
 
-_client_cache = {}
-PREFIX_TO_INSTANCE = {
-    "DVDNAIVI": "LGE", "AUDIODV": "LGE", "REAVN": "LGE", "DNSD": "LGE",
-    "C2BST": "SPAWS", "C2LST": "SPAWS", "SPAWS": "SPAWS", "LGE": "LGE",
-}
+_client_cache: dict[str, JIRA] = {}
 
-def get_jira_client(ticket_key: str | None = None, prefix: str | None = None) -> JIRA:
-    """Factory: Selects the correct JIRA instance based on ticket prefix."""
-    proj_prefix = prefix or (ticket_key.split('-')[0].upper() if ticket_key else "DEFAULT")
-    instance_key = PREFIX_TO_INSTANCE.get(proj_prefix, "DEFAULT")
-    config = JIRA_CONFIGS.get(instance_key, JIRA_CONFIGS["DEFAULT"])
-    
+
+def get_jira_client(profile_name: str | None = None, ticket_key: str | None = None) -> JIRA:
+    if not JIRA_CONFIGS:
+        raise RuntimeError("No Jira profiles configured. Add a profile in Settings and restart the app.")
+
+    if profile_name:
+        config = JIRA_CONFIGS.get(profile_name)
+        if config is None:
+            raise RuntimeError(f"Profile '{profile_name}' not found in JIRA_PROFILES_JSON.")
+    elif ticket_key:
+        prefix = ticket_key.split("-")[0].upper()
+        config = JIRA_CONFIGS.get(prefix) or next(iter(JIRA_CONFIGS.values()))
+    else:
+        config = next(iter(JIRA_CONFIGS.values()))
+
     url = config["url"]
     if url not in _client_cache:
-        options = config.get("options", {"rest_api_version": "2"})
-        _client_cache[url] = JIRA(server=url, token_auth=config["token"], options=options)
+        _client_cache[url] = JIRA(
+            server=url,
+            token_auth=config["token"],
+            options={"rest_api_version": "2"},
+        )
     return _client_cache[url]
 
 
 # --- INPUT SCHEMAS ---
 
 class BatchScanArgs(BaseModel):
-    prefixes: list[str] = Field(default=["SPAWS", "LGE"], description="Profiles to scan.")
-    mode: str = Field(default="TEAM", description="'TEAM' or 'PERSONAL'")
+    prefixes: list[str] = Field(default=[], description="Profile names to scan. Empty means all configured profiles.")
+    mode: str = Field(default="TEAM", description="'TEAM' or 'PERSONAL' (reserved for future use).")
     sort_by_age: bool = Field(default=True, description="True for oldest first.")
     custom_jql: str = Field(
         default="",
-        description="Raw JQL string provided by the user. When non-empty, used as-is for all scanned prefixes; per-profile configured filters are ignored."
+        description="Raw JQL string provided by the user. When non-empty, used as-is for all scanned profiles; per-profile configured JQL is ignored."
     )
 
 class TicketMetadataArgs(BaseModel):
@@ -110,38 +94,36 @@ class CloneTicketArgs(BaseModel):
 
 @mcp.tool()
 def get_tickets_by_batch(args: BatchScanArgs) -> str:
-    """Orchestrator Tool: Scans multiple JIRA instances using filters bound to each profile."""
+    """Orchestrator Tool: Scans multiple JIRA profiles using their configured JQL filters."""
     try:
         all_results = {}
         order_clause = "ORDER BY created ASC" if args.sort_by_age else "ORDER BY updated DESC"
+        targets = args.prefixes if args.prefixes else list(JIRA_CONFIGS.keys())
 
-        for prefix in args.prefixes:
+        for prefix in targets:
             config = JIRA_CONFIGS.get(prefix)
             if not config:
-                all_results[prefix] = {"error": f"Profile '{prefix}' not found."}
+                all_results[prefix] = {"error": f"Profile '{prefix}' not found in JIRA_PROFILES_JSON."}
                 continue
 
             try:
-                jira = get_jira_client(prefix=prefix)
+                jira = get_jira_client(profile_name=prefix)
 
                 if args.custom_jql:
                     jql = args.custom_jql
                 else:
-                    jql_base = config["filters"].get(args.mode.upper())
-                    if args.mode.upper() == "TEAM" and not jql_base:
-                        jql_base = config["filters"].get("PERSONAL")
+                    jql_base = config["jql"] or "resolution = Unresolved"
                     jql = f"{jql_base} {order_clause}"
 
                 issues = jira.search_issues(jql, maxResults=30)
-                
                 all_results[prefix] = [
-                    {"key": i.key, "summary": i.fields.summary, "created": i.fields.created} 
+                    {"key": i.key, "summary": i.fields.summary, "created": i.fields.created}
                     for i in issues
                 ]
             except Exception as e:
                 all_results[prefix] = {"error": str(e)}
 
-        return json.dumps({"status": "SUCCESS", "scan_mode": args.mode.upper(), "data": all_results}, indent=2)
+        return json.dumps({"status": "SUCCESS", "data": all_results}, indent=2)
     except Exception as e:
         return json.dumps({"status": "ERROR", "message": str(e), "retryable": False}, indent=2)
 
@@ -154,7 +136,7 @@ def fetch_ticket_metadata(args: TicketMetadataArgs) -> str:
         issue = jira.issue(args.ticket_key)
         all_comments = jira.comments(issue)
         recent = all_comments[-args.comment_limit:] if all_comments else []
-        
+
         data = {
             "key": issue.key,
             "status": issue.fields.status.name,
@@ -187,9 +169,9 @@ def read_log_tail(args: ReadLogTailArgs) -> str:
     """Reads the end of a specific log file."""
     try:
         full_path = os.path.normpath(os.path.join(WORKSPACE_ROOT, args.ticket_key, args.relative_path))
-        if not full_path.startswith(WORKSPACE_ROOT): 
+        if not full_path.startswith(WORKSPACE_ROOT):
             return json.dumps({"status": "ERROR", "message": "Path Escape detected.", "retryable": False})
-        
+
         with open(full_path, 'r', errors='ignore') as f:
             content = f.readlines()
             out = "".join(content[-args.lines:])
@@ -205,54 +187,53 @@ def fetch_and_prepare_data(args: FetchDataArgs) -> str:
         jira = get_jira_client(ticket_key=args.ticket_key)
         ticket_dir = os.path.join(WORKSPACE_ROOT, args.ticket_key)
         os.makedirs(ticket_dir, exist_ok=True)
-        
-        # Download attachments directly to the ticket directory
+
         issue = jira.issue(args.ticket_key)
         for a in issue.fields.attachment:
             dest = os.path.join(ticket_dir, a.filename)
-            with open(dest, "wb") as f: 
+            with open(dest, "wb") as f:
                 f.write(a.get())
-        
-        # Recursive extraction logic
+
         processed_archives = set()
         extracted_something = True
-        
+
         while extracted_something:
             extracted_something = False
-            
-            # Use list() to snapshot the directory state before we start creating/deleting files
+
             for file_path in list(Path(ticket_dir).rglob("*")):
                 if not file_path.is_file() or str(file_path) in processed_archives:
                     continue
-                    
-                fname = file_path.name.lower()
-                is_archive = fname.endswith(".7z.001") or (fname.endswith(".7z") and ".7z." not in fname) or fname.endswith(".zip")
-                
-                if is_archive:
-                    processed_archives.add(str(file_path)) 
-                    try:
-                        # Use 7z for ALL archives. It handles Deflate64 and weird encodings natively.
-                        subprocess.run(
-                            ["7z", "x", str(file_path), f"-o{file_path.parent}", "-y"], 
-                            check=True, 
-                            capture_output=True
-                        )
-                        file_path.unlink() # Delete archive to save space
-                        extracted_something = True # Trigger another loop to find newly revealed zips
-                        
-                    except subprocess.CalledProcessError as e:
-                        # Prevent silent failures: log the 7z error to the console if an archive is truly corrupted
-                        print(f"Warning: Failed to extract {file_path.name} - {e.stderr.decode(errors='ignore')}")
-                        pass 
 
-        # Build Manifest
+                fname = file_path.name.lower()
+                is_archive = (
+                    fname.endswith(".7z.001")
+                    or (fname.endswith(".7z") and ".7z." not in fname)
+                    or fname.endswith(".zip")
+                )
+
+                if is_archive:
+                    processed_archives.add(str(file_path))
+                    try:
+                        subprocess.run(
+                            ["7z", "x", str(file_path), f"-o{file_path.parent}", "-y"],
+                            check=True,
+                            capture_output=True,
+                        )
+                        file_path.unlink()
+                        extracted_something = True
+                    except subprocess.CalledProcessError as e:
+                        print(f"Warning: Failed to extract {file_path.name} - {e.stderr.decode(errors='ignore')}")
+
         manifest = {"bugreports": [], "driver_logs": [], "other": []}
         for p in Path(ticket_dir).rglob("*"):
             if p.is_file() and p.suffix.lower() in [".log", ".txt", ".out"]:
                 rel = f"./{p.relative_to(ticket_dir)}"
-                if "bugreport" in p.name.lower(): manifest["bugreports"].append({"name": p.name, "path": rel})
-                elif "driver" in p.name.lower(): manifest["driver_logs"].append({"name": p.name, "path": rel})
-                else: manifest["other"].append({"name": p.name, "path": rel})
+                if "bugreport" in p.name.lower():
+                    manifest["bugreports"].append({"name": p.name, "path": rel})
+                elif "driver" in p.name.lower():
+                    manifest["driver_logs"].append({"name": p.name, "path": rel})
+                else:
+                    manifest["other"].append({"name": p.name, "path": rel})
 
         return json.dumps({"status": "SUCCESS", "manifest": manifest}, indent=2)
     except Exception as e:
@@ -267,12 +248,12 @@ def save_summary_to_linux(args: SaveSummaryArgs) -> str:
         path = os.path.normpath(os.path.join(WORKSPACE_ROOT, args.ticket_key, args.filename))
         if not path.startswith(WORKSPACE_ROOT):
             return json.dumps({"status": "ERROR", "message": "Path traversal detected.", "retryable": False})
-            
+
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f: 
+        with open(path, "w") as f:
             f.write(args.content)
         return json.dumps({"status": "SUCCESS", "message": f"Saved to {path}"})
-    except Exception as e: 
+    except Exception as e:
         return json.dumps({"status": "ERROR", "message": str(e), "retryable": False})
 
 
@@ -283,13 +264,13 @@ def save_pattern_to_memory(args: SavePatternArgs) -> str:
         path = os.path.normpath(os.path.join(AGENT_WIKI_ROOT, args.topic_folder, args.filename))
         if not path.startswith(AGENT_WIKI_ROOT):
             return json.dumps({"status": "ERROR", "message": "Path traversal blocked. Stay in wiki bounds.", "retryable": False})
-            
+
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f: 
+        with open(path, "w") as f:
             f.write(args.content)
-            
+
         return json.dumps({
-            "status": "SUCCESS", 
+            "status": "SUCCESS",
             "message": f"Learned pattern successfully committed to memory at {path}"
         })
     except Exception as e:
@@ -299,10 +280,17 @@ def save_pattern_to_memory(args: SavePatternArgs) -> str:
 @mcp.tool()
 def clone_ticket_from_spaws_to_lge(args: CloneTicketArgs) -> str:
     """Clones a ticket across instances, appending comments directly to the description."""
+    if "SPAWS" not in JIRA_CONFIGS or "LGE" not in JIRA_CONFIGS:
+        return json.dumps({
+            "status": "ERROR",
+            "message": "SPAWS or LGE profile not configured. Add both profiles in Settings.",
+            "retryable": False,
+        }, indent=2)
+
     try:
-        source_jira = get_jira_client(prefix="SPAWS")
-        target_jira = get_jira_client(prefix="LGE")
-        
+        source_jira = get_jira_client(profile_name="SPAWS")
+        target_jira = get_jira_client(profile_name="LGE")
+
         issue = source_jira.issue(args.ticket_key)
         new_issue = target_jira.create_issue(
             project=args.target_project,
@@ -310,15 +298,17 @@ def clone_ticket_from_spaws_to_lge(args: CloneTicketArgs) -> str:
             description=issue.fields.description or "No description provided.",
             issuetype={"name": issue.fields.issuetype.name}
         )
-        
-        # Append comments cleanly
+
         all_comments = source_jira.comments(issue)
         if all_comments:
             comments_text = "\n".join([
                 f"[{c.created}] {c.author.displayName}:\n{c.body}\n"
                 for c in all_comments
             ])
-            updated_description = f"{new_issue.fields.description}\n\n---\n**Comments from {args.ticket_key}:**\n{comments_text}"
+            updated_description = (
+                f"{new_issue.fields.description}\n\n---\n"
+                f"**Comments from {args.ticket_key}:**\n{comments_text}"
+            )
             new_issue.update(description=updated_description)
 
         return json.dumps({

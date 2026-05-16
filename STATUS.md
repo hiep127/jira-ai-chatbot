@@ -44,29 +44,31 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 ### Backend
 | File | Status | Notes |
 |---|---|---|
-| `backend/main.py` | ✅ | FastAPI app, `/ping`, `/health`, `/chat`, `/compact`; `GET /auth/github/status`, `POST /auth/github/spawn-terminal`; `GET /models` (fetches Copilot model list, `ModelInfo` schema, caches in `app.state.models_cache`, busts on `?refresh=true`); `model_id` field on `ChatRequest` and `CompactRequest`; 401 guard in `/chat` requires valid GitHub CLI token; mock MCP fallback removed — live `jira-harness` server only, fail-fast on connection error |
+| `backend/main.py` | ✅ | FastAPI app, `/ping`, `/health`, `/chat`, `/compact`; `GET /auth/github/status`, `POST /auth/github/spawn-terminal`; `GET /models` (fetches Copilot model list, `ModelInfo` schema, caches in `app.state.models_cache`, busts on `?refresh=true`); `model_id` field on `ChatRequest` and `CompactRequest`; 401 guard in `/chat` requires valid GitHub CLI token; mock MCP fallback removed — live `jira-harness` server only, fail-fast on connection error; `POST /reload-profiles` endpoint hot-reloads MCP subprocess with updated credentials without app restart; `_build_mcp_env()` reads `get_profiles()` + keyring → builds `JIRA_PROFILES_JSON` env var; `asyncio.Lock` prevents concurrent reload races |
 | `backend/agent/state.py` | ✅ | `AgentState` with `ticket_summaries: Annotated[list[str], operator.add]` reducer; `TicketState` with `ticket_id` field for map-reduce fan-out |
 | `backend/agent/nodes.py` | ✅ | `make_discovery_and_dispatch_node` fans out via `Send("ticket_summarizer_node", {"ticket_id": k})`; `make_ticket_summarizer_node` applies context budgeting (strips raw Jira JSON → slim `{title, description[:2000], comments[:5][body]}`) before LLM call; `make_aggregate_and_report_node` compiles and saves |
 | `backend/agent/graph.py` | ✅ | Flat map-reduce graph: nodes `ticket_summarizer_node` + `aggregate_summary_node`; conditional edges target list updated; all `summarizer_daily` / `aggregate_and_report` references replaced |
 | `backend/agent/llm_factory.py` | ✅ | `build_llm(model_id="")` / `build_summarizer_llm(model_id="")` — Copilot-only; `ChatOpenAI` via GitHub Copilot endpoint; falls back to `_DEFAULT_MODEL` (`gpt-4o`) / `_DEFAULT_SUMMARIZER_MODEL` (`gpt-4o-mini`) when `model_id` is empty |
 | `backend/utils/github_auth.py` | ✅ | `get_local_github_token()` (calls `gh auth token`, `CREATE_NO_WINDOW` flag suppresses console flash); `check_auth(force=False)` (module-level cache `_auth_cache`); `spawn_windows_auth_terminal()` (opens cmd.exe); `_gh_exe()` checks frozen `tools/gh.exe`, then project-root `tools/gh.exe` (dev mode), then PATH |
-| `config/providers.py` | ✅ | Jira PAT helpers + `save_active_provider` only; all multi-provider functions removed (`KEY_PROVIDERS`, `ALL_PROVIDERS`, `load_key`, `save_key`, `delete_key`, `load_active_provider`) |
+| `config/providers.py` | ✅ | Per-profile PAT helpers: `get_jira_pat_for_profile(name)`, `set_jira_pat_for_profile(name, pat)`, `delete_jira_pat_for_profile(name)` stored in Windows Credential Manager under `jira_pat_{name.lower()}`; legacy `get_jira_pat`/`set_jira_pat` preserved for backward compatibility |
+| `config/settings.py` | ✅ | `get_profiles() -> list[dict]` and `save_profiles(profiles)` for persisting Jira profiles (non-sensitive fields only: `name`, `host`, `custom_jql`) to `settings.json`; `"profiles"` added to `_PERSIST_KEYS` |
+| `tools/jira_tool.py` | ✅ | Dynamic `JIRA_CONFIGS` built from `JIRA_PROFILES_JSON` env var injected by backend at subprocess start (no hardcoded credentials); updated `get_jira_client(profile_name, ticket_key)` routing; `get_tickets_by_batch` prefixes now refer to profile names (defaults to all configured profiles); `clone_ticket_from_spaws_to_lge` uses named profile lookup |
 
 ### Frontend
 | File | Status | Notes |
 |---|---|---|
-| `frontend/main.py` | ✅ | Flet desktop app; starts backend in-process (thread); 10 s health-check timeout; auth guard container (`refresh_auth_state()`); `app_state` carries `model_id`/`model_name`/`model_tier`; `model_id` forwarded in `/chat` and `/compact` payloads; model chip button opens `open_model_picker`; GitHub Copilot 401 → `page.show_dialog(SnackBar)` |
+| `frontend/main.py` | ✅ | Flet desktop app; starts backend in-process (thread); 10 s health-check timeout; auth guard container (`refresh_auth_state()`); `app_state` carries `model_id`/`model_name`/`model_tier`; `model_id` forwarded in `/chat` and `/compact` payloads; model chip button opens `open_model_picker`; GitHub Copilot 401 → `page.show_dialog(SnackBar)`; `FilterChip` active-profile selector row (between Jira Parent Link and send controls); `_toggle_profile()` mutates `app_state["active_profiles"]` set; active profiles persisted to `settings.json` and restored on launch; `prefixes` in `/chat` payload set from active profiles; chip row rebuilt on `on_settings_saved` callback |
 | `frontend/components/__init__.py` | ✅ | Empty package marker for `frontend/components/` |
 | `frontend/components/model_picker.py` | ✅ | `open_model_picker(page, app_state, on_model_selected)` — `AlertDialog` (360 px); search field + Refresh + Gear header; `ft.ListView` of `ListTile` rows with checkmark on active model; collapsible "Other Models" section; `ft.ProgressRing` while fetching; 401 → closes picker and opens `open_config_dialog`; writes `model_id`/`model_name`/`model_tier` into `app_state` |
 | `frontend/views/config.py` | ✅ | Copilot auth dialog (`open_config_dialog`); proactive `_check_copilot_status()` via `page.run_task`; `on_save`/`on_close` async; `page.show_dialog()` / `page.pop_dialog()` (Flet 0.84 API); `on_closed` callback |
 | `frontend/views/dialogs.py` | ✅ | `show_error_dialog` — `page.show_dialog()` / `page.pop_dialog()` (Flet 0.84 API) |
-| `frontend/views/jira_settings.py` | ✅ | Settings dialog; Dynamic Filter Builder (`filter_rows_column`, `_make_filter_row()`, `_add_filter_row()`); `on_auth_change` callback; `page.show_dialog()` / `page.pop_dialog()` (Flet 0.84 API); `ft.Icons.DELETE` (not `ft.icons.DELETE`) |
+| `frontend/views/jira_settings.py` | ✅ | Two-panel profile CRUD dialog (860×480 px); left panel: scrollable `ft.ListView` of `ft.ListTile` per profile + `+ Add Profile` button; right panel: Name, Host URL, PAT (masked), Custom JQL fields with `Save Profile` / `Delete Profile` actions; `Save & Close` persists profiles then fires `POST /reload-profiles`; `on_auth_change` callback; Flet 0.84 API (`page.show_dialog()` / `page.pop_dialog()`, `ft.Icons.*`, `ft.Colors.*`, `ft.Padding()`, `ft.Border()`) |
 
 **UI features:**
 - Chat message bubbles (user / assistant)
 - Jira Parent Link input field
-- Dynamic Filter Builder: add/remove rows, supports Project / Assignee / Status filters
-- Settings gear icon → opens Jira settings dialog
+- Multi-profile chip row: `FilterChip` toggles per Jira profile; selection persisted across restarts; chips rebuilt after settings dialog closes
+- Settings gear icon → opens Jira profile CRUD dialog (two-panel, add/edit/delete profiles)
 - Model chip button (header) → opens model picker; selected model name shown on chip
 - Auth guard: if GitHub CLI not authenticated, chat is locked and an overlay prompt is shown
 - Compact button → `/compact` with active `model_id`
@@ -133,9 +135,8 @@ pytest
 | 🚨 | Critical blocker |
 | ⏳ | Waiting |
 
-## Jira URL Rules
+## Jira Profile Routing
 
-| Project prefix | URL pattern |
-|---|---|
-| DVDNAIVI, AUDIODV, REAVN, DNSD | `https://jira.lge.com/issue/browse/{KEY}` |
-| SPAWS | `https://spaws.jp.nissan.biz/jira/browse/{KEY}` |
+Profiles replace the old hardcoded prefix-to-instance map. Each profile stores `name`, `host`, and `custom_jql` in `settings.json`; PATs are in Windows Credential Manager. The backend injects all profiles as `JIRA_PROFILES_JSON` into the MCP subprocess at startup (and on `/reload-profiles`).
+
+`get_tickets_by_batch` accepts `prefixes` = list of profile names (e.g. `["SPAWS", "LGE"]`). If no prefixes are passed, all configured profiles are scanned. `fetch_ticket_metadata` falls back to the first configured profile when no matching profile name is found for a ticket key.

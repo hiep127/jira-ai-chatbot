@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import re
 import sys
 from contextlib import asynccontextmanager
@@ -14,8 +16,33 @@ from pydantic import BaseModel
 
 from backend.agent.graph import build_graph
 from backend.agent.llm_factory import build_llm
+from config.providers import get_jira_pat_for_profile
+from config.settings import get_profiles
 
 logger = logging.getLogger(__name__)
+
+
+def _build_mcp_env() -> dict[str, str]:
+    try:
+        profiles = get_profiles()
+        payload = [
+            {
+                "name": p["name"],
+                "host": p.get("host", ""),
+                "token": get_jira_pat_for_profile(p["name"]) or "",
+                "jql": p.get("custom_jql", ""),
+            }
+            for p in profiles
+            if p.get("name")
+        ]
+        return {**os.environ, "JIRA_PROFILES_JSON": json.dumps(payload)}
+    except Exception as exc:
+        logger.warning(
+            "[backend] Failed to build MCP env from profiles: %s. "
+            "Starting without Jira profile credentials.",
+            exc,
+        )
+        return dict(os.environ)
 
 
 class ModelInfo(BaseModel):
@@ -51,6 +78,11 @@ class ChatResponse(BaseModel):
     thread_id: str
 
 
+class ReloadResponse(BaseModel):
+    status: str
+    message: str
+
+
 class PingResponse(BaseModel):
     status: str
     message: str
@@ -78,20 +110,24 @@ async def lifespan(app: FastAPI):
         app.state.models_cache = None
         yield
     else:
-        try:
-            async with MultiServerMCPClient(
-                {
-                    "jira": {
-                        "command": sys.executable,
-                        "args": ["tools/jira_tool.py"],
-                        "transport": "stdio",
-                    }
+        mcp_client = MultiServerMCPClient(
+            {
+                "jira": {
+                    "command": sys.executable,
+                    "args": ["tools/jira_tool.py"],
+                    "transport": "stdio",
+                    "env": _build_mcp_env(),
                 }
-            ) as mcp_client:
-                tools = mcp_client.get_tools()
-                app.state.graph = build_graph(tools)
-                app.state.models_cache = None
-                yield
+            }
+        )
+        try:
+            await mcp_client.__aenter__()
+            tools = mcp_client.get_tools()
+            app.state.graph = build_graph(tools)
+            app.state.models_cache = None
+            app.state.mcp_ctx = mcp_client
+            app.state.reload_lock = asyncio.Lock()
+            yield
         except Exception as exc:
             logger.critical(
                 "[startup] Live jira-harness MCP server failed to connect: %s. "
@@ -100,6 +136,9 @@ async def lifespan(app: FastAPI):
                 exc,
             )
             raise
+        finally:
+            current_ctx = getattr(app.state, "mcp_ctx", mcp_client)
+            await current_ctx.__aexit__(None, None, None)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -108,6 +147,57 @@ app = FastAPI(lifespan=lifespan)
 @app.get("/ping")
 async def ping() -> PingResponse:
     return PingResponse(status="ok", message="pong")
+
+
+@app.post("/reload-profiles", response_model=ReloadResponse)
+async def reload_profiles(request: Request) -> ReloadResponse:
+    if getattr(sys, "frozen", False):
+        return ReloadResponse(
+            status="skipped",
+            message="Reload not supported in bundled mode. Restart the app.",
+        )
+
+    async with request.app.state.reload_lock:
+        new_env = _build_mcp_env()
+        new_client = MultiServerMCPClient(
+            {
+                "jira": {
+                    "command": sys.executable,
+                    "args": ["tools/jira_tool.py"],
+                    "transport": "stdio",
+                    "env": new_env,
+                }
+            }
+        )
+        try:
+            await new_client.__aenter__()
+            tools = new_client.get_tools()
+            new_graph = build_graph(tools)
+        except Exception as exc:
+            logger.warning(
+                "[reload-profiles] Failed to start new MCP process: %s. "
+                "Remediation: restart the app.",
+                exc,
+            )
+            try:
+                await new_client.__aexit__(None, None, None)
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=500,
+                detail=f"Profile reload failed: {exc}. Remediation: restart the app.",
+            )
+
+        old_ctx = request.app.state.mcp_ctx
+        request.app.state.mcp_ctx = new_client
+        request.app.state.graph = new_graph
+
+        try:
+            await old_ctx.__aexit__(None, None, None)
+        except Exception as exc:
+            logger.warning("[reload-profiles] Failed to shut down old MCP context: %s", exc)
+
+        return ReloadResponse(status="ok", message="Profiles reloaded successfully.")
 
 
 @app.get("/health")

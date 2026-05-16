@@ -6,7 +6,12 @@ from typing import Any
 import httpx
 import uvicorn
 import flet as ft
-from config.settings import load_filter_settings
+from config.settings import (
+    get_active_profiles,
+    get_profiles,
+    load_filter_settings,
+    save_active_profiles,
+)
 from frontend.views.jira_settings import open_jira_settings_dialog
 from frontend.views.dialogs import show_error_dialog
 from frontend.components.model_picker import open_model_picker
@@ -123,9 +128,9 @@ async def main(page: ft.Page) -> None:
                     json={
                         "prompt":      prompt_text,
                         "thread_id":   thread_id,
-                        "prefixes":    [app_state["jira_env"]] if app_state["jira_env"] else [],
+                        "prefixes":    list(app_state["active_profiles"]),
                         "mode":        "TEAM",
-                        "parent_link": app_state["parent_link"],
+                        "parent_link": app_state.get("parent_link", ""),
                         "custom_jql":  app_state.get("custom_jql", ""),
                         "model_id":    app_state.get("model_id", ""),
                     },
@@ -282,6 +287,36 @@ async def main(page: ft.Page) -> None:
         model_chip_label.value = f"{name} · {tier}" if name else "Select model"
         rebuild_sidebar()
 
+    _profiles: list[dict] = get_profiles()
+    _saved_active = saved.get("active_profiles") if saved else None
+    app_state["active_profiles"] = (
+        set(_saved_active) if _saved_active is not None else {p["name"] for p in _profiles}
+    )
+
+    def _build_profile_chips(current_profiles: list[dict]) -> list[ft.FilterChip]:
+        return [
+            ft.FilterChip(
+                label=ft.Text(p["name"]),
+                selected=p["name"] in app_state["active_profiles"],
+                on_select=lambda e, name=p["name"]: _toggle_profile(name, e.control.selected),
+            )
+            for p in current_profiles
+        ]
+
+    def _toggle_profile(name: str, is_selected: bool) -> None:
+        if is_selected:
+            app_state["active_profiles"].add(name)
+        else:
+            app_state["active_profiles"].discard(name)
+        save_active_profiles(list(app_state["active_profiles"]))
+        page.update()
+
+    profile_chips_row = ft.Row(
+        controls=_build_profile_chips(_profiles),
+        visible=len(_profiles) > 0,
+        wrap=True,
+    )
+
     async def _prefetch_models() -> None:
         try:
             async with httpx.AsyncClient(timeout=15) as client:
@@ -308,12 +343,25 @@ async def main(page: ft.Page) -> None:
         if authenticated:
             page.run_task(_prefetch_models)
 
+    def _on_settings_saved() -> None:
+        rebuild_sidebar()
+        fresh = get_profiles()
+        existing_names = {p["name"] for p in _profiles}
+        for p in fresh:
+            if p["name"] not in existing_names:
+                app_state["active_profiles"].add(p["name"])
+        _profiles.clear()
+        _profiles.extend(fresh)
+        profile_chips_row.controls = _build_profile_chips(_profiles)
+        profile_chips_row.visible = len(_profiles) > 0
+        page.update()
+
     async def on_settings(e: ft.ControlEvent) -> None:
         try:
             open_jira_settings_dialog(
                 page,
                 app_state,
-                on_settings_saved=rebuild_sidebar,
+                on_settings_saved=_on_settings_saved,
                 on_auth_change=lambda: page.run_task(refresh_auth_state),
             )
         except Exception as exc:
@@ -346,6 +394,7 @@ async def main(page: ft.Page) -> None:
                         ft.Row([title_text, summary_btn, settings_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                         auth_guard_container,
                         message_list,
+                        profile_chips_row,
                         ft.Row([model_chip, input_field, compact_btn, send_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ],
                     expand=True,

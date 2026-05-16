@@ -1,166 +1,224 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
-from typing import Any
 from urllib.parse import urlparse
 
 import flet as ft
+import httpx
 
-from config.providers import get_jira_pat, set_jira_pat
-from config.settings import save_filter_settings
+from config.providers import (
+    delete_jira_pat_for_profile,
+    get_jira_pat_for_profile,
+    set_jira_pat_for_profile,
+)
+from config.settings import get_profiles, save_profiles
 from frontend.views.config import open_config_dialog
 from frontend.views.dialogs import show_error_dialog
+
+logger = logging.getLogger(__name__)
 
 
 def open_jira_settings_dialog(
     page: ft.Page,
-    state: dict[str, Any],
+    state: dict,
     on_settings_saved: Callable[[], None] | None = None,
     on_auth_change: Callable[[], None] | None = None,
 ) -> None:
-    profile_name_field = ft.TextField(
-        label="Profile Name *",
-        hint_text="e.g. My Sprint View",
-        value=state.get("filter_profile_name", ""),
-        expand=True,
-        content_padding=ft.Padding(left=10, right=10, top=8, bottom=8),
-    )
+    profiles: list[dict] = [dict(p) for p in get_profiles()]
+    selected_idx: list[int] = [-1]
 
+    # --- Form fields ---
+    name_field = ft.TextField(label="Name *", hint_text="e.g. SPAWS", expand=True)
+    host_field = ft.TextField(label="Host URL *", hint_text="https://jira.example.com", expand=True)
     pat_field = ft.TextField(
-        label="Jira PAT *",
+        label="PAT *",
         password=True,
         can_reveal_password=True,
-        value=get_jira_pat() or "",
         expand=True,
-        content_padding=ft.Padding(left=10, right=10, top=8, bottom=8),
+        hint_text="Leave blank to keep existing PAT",
+    )
+    jql_field = ft.TextField(
+        label="Custom JQL",
+        multiline=True,
+        min_lines=3,
+        expand=True,
+        hint_text="assignee IN (...) AND resolution = Unresolved",
     )
 
-    _parsed_jira_env: str = state.get("jira_env", "")
+    profile_list_view = ft.ListView(expand=True)
+    right_panel = ft.Container(expand=True, padding=ft.Padding(left=16, right=0, top=0, bottom=0))
 
-    def _on_parent_link_change(e: ft.ControlEvent) -> None:
-        nonlocal _parsed_jira_env
-        raw = (e.control.value or "").strip()
+    def _build_list_tiles() -> list[ft.ListTile]:
+        return [
+            ft.ListTile(
+                title=ft.Text(p.get("name") or "(unnamed)"),
+                selected=(i == selected_idx[0]),
+                on_click=lambda e, i=i: _select_profile(e, i),
+                dense=True,
+            )
+            for i, p in enumerate(profiles)
+        ]
+
+    def _show_placeholder() -> None:
+        right_panel.content = ft.Container(
+            content=ft.Text(
+                "Select a profile or click + Add Profile.",
+                color=ft.Colors.GREY_500,
+            ),
+            alignment=ft.Alignment(0, 0),
+            expand=True,
+        )
+
+    def _show_form() -> None:
+        right_panel.content = _build_form_column()
+
+    def _build_form_column() -> ft.Column:
+        return ft.Column(
+            controls=[
+                name_field,
+                host_field,
+                pat_field,
+                jql_field,
+                ft.Row(
+                    controls=[
+                        ft.ElevatedButton(
+                            "Save Profile",
+                            on_click=_save_profile,
+                            icon=ft.Icons.SAVE,
+                        ),
+                        ft.TextButton(
+                            "Delete Profile",
+                            on_click=_delete_profile,
+                            style=ft.ButtonStyle(color=ft.Colors.RED_400),
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.START,
+                ),
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            spacing=12,
+        )
+
+    def _clear_form() -> None:
+        name_field.value = ""
+        host_field.value = ""
+        pat_field.value = ""
+        jql_field.value = ""
+
+    def _add_profile(e: ft.ControlEvent) -> None:
+        profiles.append({"name": "", "host": "", "custom_jql": ""})
+        selected_idx[0] = len(profiles) - 1
+        _clear_form()
+        profile_list_view.controls = _build_list_tiles()
+        _show_form()
+        page.update()
+
+    def _select_profile(e: ft.ControlEvent, i: int) -> None:
+        selected_idx[0] = i
+        p = profiles[i]
+        name_field.value = p.get("name", "")
+        host_field.value = p.get("host", "")
+        jql_field.value = p.get("custom_jql", "")
+        pat_field.value = ""
+        profile_list_view.controls = _build_list_tiles()
+        _show_form()
+        page.update()
+
+    async def _save_profile(e: ft.ControlEvent) -> None:
+        name = name_field.value.strip()
+        host = host_field.value.strip()
+
+        if not name:
+            show_error_dialog(
+                page,
+                "Validation Error: Name is required.\n\nRemediation: Enter a unique profile name (e.g. SPAWS).",
+            )
+            return
+
+        if not host:
+            show_error_dialog(
+                page,
+                "Validation Error: Host URL is required.\n\nRemediation: Enter the full Jira server URL (e.g. https://jira.example.com).",
+            )
+            return
+
         try:
-            parsed = urlparse(raw)
-            if parsed.scheme and parsed.netloc:
-                _parsed_jira_env = f"{parsed.scheme}://{parsed.netloc}"
-            else:
-                _parsed_jira_env = ""
+            parsed = urlparse(host)
+            if not (parsed.scheme and parsed.netloc):
+                raise ValueError("Missing scheme or host")
         except Exception:
-            _parsed_jira_env = ""
+            show_error_dialog(
+                page,
+                "Validation Error: Host URL is invalid.\n\nRemediation: Use a full URL including https:// (e.g. https://jira.example.com).",
+            )
+            return
 
-    parent_link_field = ft.TextField(
-        label="Jira Parent Link *",
-        hint_text="e.g. https://jira.lge.com/browse/PROJ-42",
-        value=state.get("parent_link", ""),
-        expand=True,
-        content_padding=ft.Padding(left=10, right=10, top=8, bottom=8),
-        on_change=_on_parent_link_change,
-    )
+        profiles[selected_idx[0]] = {
+            "name": name,
+            "host": host,
+            "custom_jql": jql_field.value.strip(),
+        }
 
-    # Parse pre-filled parent_link on init
-    _parsed_jira_env = ""
-    if state.get("parent_link"):
+        pat = pat_field.value.strip()
+        if pat:
+            try:
+                set_jira_pat_for_profile(name, pat)
+            except Exception as exc:
+                show_error_dialog(
+                    page,
+                    f"Failed to save PAT for '{name}': {exc}\n\n"
+                    "Remediation: Check that Windows Credential Manager is accessible "
+                    "(Control Panel → Credential Manager → Windows Credentials).",
+                )
+                return
+
         try:
-            parsed = urlparse(state["parent_link"])
-            if parsed.scheme and parsed.netloc:
-                _parsed_jira_env = f"{parsed.scheme}://{parsed.netloc}"
+            save_profiles(profiles)
+        except Exception as exc:
+            show_error_dialog(page, f"Failed to save profiles: {exc}")
+            return
+
+        profile_list_view.controls = _build_list_tiles()
+        page.show_dialog(ft.SnackBar(ft.Text("Profile saved."), open=True))
+        page.update()
+
+    async def _delete_profile(e: ft.ControlEvent) -> None:
+        if selected_idx[0] < 0:
+            return
+
+        name = profiles[selected_idx[0]].get("name", "")
+        try:
+            delete_jira_pat_for_profile(name)
         except Exception:
             pass
 
-    custom_jql_field = ft.TextField(
-        label="Custom JQL Query",
-        multiline=True,
-        min_lines=3,
-        hint_text="e.g., assignee in (hang2.le, hiep.tran) AND resolution = Unresolved ORDER BY updated DESC",
-        value=state.get("custom_jql", ""),
-        expand=True,
-        content_padding=ft.Padding(left=10, right=10, top=8, bottom=8),
-    )
+        profiles.pop(selected_idx[0])
+        save_profiles(profiles)
+        selected_idx[0] = -1
+        _clear_form()
+        _show_placeholder()
+        profile_list_view.controls = _build_list_tiles()
+        page.update()
 
-    def _make_filter_row(field: str = "", value: str = "") -> ft.Row:
-        row: ft.Row = ft.Row(controls=[])
+    async def on_save_and_close(e: ft.ControlEvent) -> None:
+        page.pop_dialog()
+        if on_auth_change:
+            on_auth_change()
 
-        def _remove_row(e: ft.ControlEvent) -> None:
+        async def _fire_reload() -> None:
             try:
-                filter_rows_column.controls.remove(row)
-                page.update()
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    await client.post("http://localhost:8000/reload-profiles")
             except Exception as exc:
-                show_error_dialog(page, f"Could not remove filter row: {exc}")
+                logger.warning(
+                    "[jira_settings] reload-profiles failed: %s. App restart may be required.", exc
+                )
 
-        row.controls = [
-            ft.Dropdown(
-                value=field or None,
-                options=[
-                    ft.dropdown.Option("Project"),
-                    ft.dropdown.Option("Assignee"),
-                    ft.dropdown.Option("Status"),
-                ],
-                expand=True,
-            ),
-            ft.Text("="),
-            ft.TextField(value=value, expand=True),
-            ft.IconButton(icon=ft.Icons.DELETE, on_click=_remove_row),
-        ]
-        return row
-
-    filter_rows_column = ft.Column(controls=[], spacing=8)
-    for k, v in state.get("filters", {}).items():
-        filter_rows_column.controls.append(_make_filter_row(k, v))
-
-    def _add_filter_row(e: ft.ControlEvent) -> None:
-        try:
-            filter_rows_column.controls.append(_make_filter_row())
-            page.update()
-        except Exception as exc:
-            show_error_dialog(page, f"Could not add filter row: {exc}")
-
-    add_filter_btn = ft.TextButton("+ Add Filter", on_click=_add_filter_row)
-
-    async def on_save(e: ft.ControlEvent) -> None:
-        if (
-            not profile_name_field.value.strip()
-            or not pat_field.value.strip()
-            or not parent_link_field.value.strip()
-        ):
-            show_error_dialog(
-                page,
-                "Validation Error: Missing Required Fields.\n\n"
-                "Remediation: You must provide a Profile Name, Jira PAT, and "
-                "Parent Link before saving.",
-            )
-            return
-        try:
-            state["filter_profile_name"] = profile_name_field.value.strip()
-            state["jira_env"]             = _parsed_jira_env
-            state["parent_link"]          = parent_link_field.value.strip()
-            state["custom_jql"]           = custom_jql_field.value.strip()
-            filters: dict[str, str] = {}
-            for row in filter_rows_column.controls:
-                key = (row.controls[0].value or "").strip()
-                val = (row.controls[2].value or "").strip()
-                if key and val:
-                    filters[key] = val
-            state["filters"] = filters
-            pat = pat_field.value.strip()
-            if pat:
-                set_jira_pat(pat)
-            save_filter_settings(state)
-            page.pop_dialog()
-            if on_auth_change:
-                on_auth_change()
-            if on_settings_saved:
-                on_settings_saved()
-            page.update()
-        except Exception as exc:
-            print(f"[on_save] Exception: {exc}")
-            show_error_dialog(
-                page,
-                f"Failed to save settings: {exc}\n\n"
-                "Remediation: if this is a credential error, ensure Windows Credential "
-                "Manager is accessible (Control Panel → Credential Manager → "
-                "Windows Credentials).",
-            )
+        page.run_task(_fire_reload)
+        if on_settings_saved:
+            on_settings_saved()
+        page.update()
 
     async def on_cancel(e: ft.ControlEvent) -> None:
         page.pop_dialog()
@@ -168,71 +226,51 @@ def open_jira_settings_dialog(
             on_auth_change()
         page.update()
 
-    async def open_model_config(e: ft.ControlEvent) -> None:
+    async def open_model_settings(e: ft.ControlEvent) -> None:
         try:
             open_config_dialog(page, on_closed=on_auth_change)
         except Exception as exc:
-            print(f"[open_model_config] {exc}")
             show_error_dialog(
                 page,
-                f"Failed to open Model Settings: {exc}\n\n"
-                "Remediation: restart the application.",
+                f"Failed to open Model Settings: {exc}\n\nRemediation: restart the application.",
             )
+
+    _show_placeholder()
+    profile_list_view.controls = _build_list_tiles()
+
+    left_panel = ft.Container(
+        content=ft.Column(
+            controls=[
+                ft.Text("Profiles", weight=ft.FontWeight.BOLD, size=12),
+                profile_list_view,
+                ft.TextButton("+ Add Profile", on_click=_add_profile),
+            ],
+            expand=True,
+        ),
+        width=160,
+        border=ft.Border(right=ft.BorderSide(1, ft.Colors.GREY_700)),
+        padding=ft.Padding(left=0, right=8, top=0, bottom=0),
+    )
+
+    content = ft.Container(
+        content=ft.Row(
+            controls=[left_panel, right_panel],
+            expand=True,
+        ),
+        width=860,
+        height=480,
+    )
 
     dialog = ft.AlertDialog(
         modal=True,
-        title=ft.Text("Settings"),
-        content=_build_dialog_content(
-            profile_name_field,
-            pat_field,
-            parent_link_field,
-            custom_jql_field,
-            filter_rows_column,
-            add_filter_btn,
-        ),
+        title=ft.Text("Jira Profile Settings"),
+        content=content,
         actions=[
-            ft.ElevatedButton("Save & Close", on_click=on_save),
-            ft.TextButton("Model Settings", on_click=open_model_config),
+            ft.ElevatedButton("Save & Close", on_click=on_save_and_close),
+            ft.TextButton("Model Settings", on_click=open_model_settings),
             ft.TextButton("Cancel", on_click=on_cancel),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
 
     page.show_dialog(dialog)
-
-
-def _build_dialog_content(
-    profile_name_field: ft.TextField,
-    pat_field: ft.TextField,
-    parent_link_field: ft.TextField,
-    custom_jql_field: ft.TextField,
-    filter_rows_column: ft.Column,
-    add_filter_btn: ft.TextButton,
-) -> ft.Container:
-    column = ft.Column(
-        controls=[
-            ft.Text("Profile Name *", weight=ft.FontWeight.BOLD),
-            profile_name_field,
-            ft.Divider(),
-            ft.Text("Jira PAT *", weight=ft.FontWeight.BOLD),
-            pat_field,
-            ft.Divider(),
-            ft.Text("Jira Parent Link *", weight=ft.FontWeight.BOLD),
-            parent_link_field,
-            ft.Divider(),
-            ft.Text("Custom JQL Query", weight=ft.FontWeight.BOLD),
-            custom_jql_field,
-            ft.Divider(),
-            ft.Row(
-                controls=[
-                    ft.Text("Filters", weight=ft.FontWeight.BOLD),
-                    add_filter_btn,
-                ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            ),
-            filter_rows_column,
-        ],
-        scroll=ft.ScrollMode.AUTO,
-        spacing=14,
-    )
-    return ft.Container(content=column, width=800)
