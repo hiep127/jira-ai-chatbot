@@ -66,7 +66,7 @@ You receive ONE ticket key. Your steps:
 def make_llm_node(tools: list[Any]) -> Callable[[dict], dict]:
     """Single-agent node — used as fallback when MCP tools are unavailable."""
     def node(state: dict) -> dict:
-        llm = build_llm()
+        llm = build_llm(model_id=state.get("model_id", ""))
         bound = llm.bind_tools(tools) if tools else llm
         response = bound.invoke(state["messages"])
         return {"messages": [response]}
@@ -205,7 +205,7 @@ def make_summarizer_daily_node(fetch_tool: Any) -> Callable[[TicketState], dict]
                 SystemMessage(content=_SUMMARIZER_DAILY_PROMPT),
                 HumanMessage(content=f"Ticket key: {ticket_key}"),
             ]
-            llm = build_summarizer_llm().bind_tools([fetch_tool])
+            llm = build_summarizer_llm(model_id=state.get("model_id", "")).bind_tools([fetch_tool])
 
             for _ in range(3):
                 response = llm.invoke(messages)

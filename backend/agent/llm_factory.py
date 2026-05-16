@@ -4,7 +4,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
 _DEFAULT_MODEL = "gpt-4o"
-_DEFAULT_SUMMARIZER_MODEL = "gpt-4o-mini"
+_DEFAULT_SUMMARIZER_MODEL = "gpt-4o"
 
 
 def build_llm(model_id: str = "") -> BaseChatModel:

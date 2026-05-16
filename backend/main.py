@@ -193,6 +193,7 @@ async def chat(body: ChatRequest, request: Request) -> ChatResponse:
                 "ticket_summaries":     [],
                 "parent_link":          body.parent_link,
                 "custom_jql":           body.custom_jql,
+                "model_id":             body.model_id,
             },
             config={"configurable": {"thread_id": body.thread_id}},
         )

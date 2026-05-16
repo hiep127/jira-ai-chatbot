@@ -75,7 +75,7 @@ async def main(page: ft.Page) -> None:
         jql = app_state.get("custom_jql", "")
         if jql:
             sidebar_col.controls.append(
-                ft.Text(jql, size=11, color=ft.Colors.GREY_300, selectable=True)
+                ft.Text(jql, size=12, color=ft.Colors.GREY_100, selectable=True, no_wrap=False)
             )
         else:
             sidebar_col.controls.append(
@@ -271,6 +271,13 @@ async def main(page: ft.Page) -> None:
         model_chip_label.value = f"{name} · {tier}" if name else "Select model"
         page.update()
 
+    async def _prefetch_models() -> None:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                await client.get("http://localhost:8000/models")
+        except Exception:
+            pass
+
     async def refresh_auth_state() -> None:
         try:
             async with httpx.AsyncClient(timeout=5) as client:
@@ -286,6 +293,9 @@ async def main(page: ft.Page) -> None:
         compact_btn.disabled = not authenticated
         summary_btn.disabled = not authenticated
         page.update()
+
+        if authenticated:
+            page.run_task(_prefetch_models)
 
     async def on_settings(e: ft.ControlEvent) -> None:
         try:

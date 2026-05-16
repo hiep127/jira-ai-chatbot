@@ -18,6 +18,7 @@ class AgentState(MessagesState):
     ticket_summaries: Annotated[list[str], operator.add]
     parent_link: str
     custom_jql: str
+    model_id: str
 
 
 class SummarizerState(MessagesState):
