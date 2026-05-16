@@ -5,7 +5,7 @@ import logging
 import os
 from typing import Any, Callable
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage  # ToolMessage kept for make_summarizer_node (legacy path)
 from langgraph.graph import END
 from langgraph.types import Send
 
@@ -47,14 +47,13 @@ Do NOT copy-paste comment text verbatim. Reason about what is happening and summ
 
 _SUMMARIZER_DAILY_PROMPT = """\
 You are the Summarizer Agent (Audio Framework Specialist).
-You receive ONE ticket key. Your steps:
-1. Call fetch_ticket_metadata for the given ticket (comment_limit=5).
-2. From the JSON response extract: KEY, STATUS, ASSIGNEE, SUMMARY, latest 5 comments.
-3. Determine INSTANCE: "LGE" if prefix in {DVDNAIVI, AUDIODV, REAVN, DNSD}, else "SPAWS".
-4. Synthesise a 1-sentence PULSE: what is the team actually doing RIGHT NOW?
+You receive ONE ticket key and its full metadata JSON. Your steps:
+1. From the JSON extract: KEY, STATUS, ASSIGNEE, SUMMARY, latest 5 comments.
+2. Determine INSTANCE: "LGE" if prefix in {DVDNAIVI, AUDIODV, REAVN, DNSD}, else "SPAWS".
+3. Synthesise a 1-sentence PULSE: what is the team actually doing RIGHT NOW?
    Reason from the comments — do NOT copy-paste verbatim. If no comments: "No recent activity."
-5. Identify BLOCKER: one word/phrase for any explicit impediment, or "—" if none.
-6. Output EXACTLY ONE pipe-delimited line — no prose, no markdown, no extra lines:
+4. Identify BLOCKER: one word/phrase for any explicit impediment, or "—" if none.
+5. Output EXACTLY ONE pipe-delimited line — no prose, no markdown, no extra lines:
    TICKET_KEY | INSTANCE | STATUS | PULSE | BLOCKER\
 """
 
@@ -196,29 +195,18 @@ def make_discovery_and_dispatch_node(batch_tool: Any) -> Callable[[dict], Any]:
 
 
 def make_summarizer_daily_node(fetch_tool: Any) -> Callable[[TicketState], dict]:
-    """LLM + tool loop node: fetch one ticket's metadata, synthesise to a pipe-delimited line."""
+    """Fetch ticket metadata in Python, then summarise with a plain LLM call (no tool binding)."""
     def node(state: TicketState) -> dict:
         ticket_key: str = state["ticket_key"]
 
         try:
+            raw = fetch_tool.invoke({"ticket_key": ticket_key, "comment_limit": 5})
             messages: list = [
                 SystemMessage(content=_SUMMARIZER_DAILY_PROMPT),
-                HumanMessage(content=f"Ticket key: {ticket_key}"),
+                HumanMessage(content=f"Ticket key: {ticket_key}\n\nMetadata JSON:\n{raw}"),
             ]
-            llm = build_summarizer_llm(model_id=state.get("model_id", "")).bind_tools([fetch_tool])
-
-            for _ in range(3):
-                response = llm.invoke(messages)
-                if not (hasattr(response, "tool_calls") and response.tool_calls):
-                    break
-                messages.append(response)
-                for tool_call in response.tool_calls:
-                    logger.debug("[summarizer_daily] tool_call args: %s", tool_call["args"])
-                    result = fetch_tool.invoke(tool_call["args"])
-                    messages.append(
-                        ToolMessage(content=str(result), tool_call_id=tool_call["id"])
-                    )
-
+            llm = build_summarizer_llm(model_id=state.get("model_id", ""))
+            response = llm.invoke(messages)
             return {"ticket_summaries": [str(response.content)]}
 
         except Exception as e:
