@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 import uvicorn
 import flet as ft
+from config.settings import load_filter_settings
 from frontend.views.jira_settings import open_jira_settings_dialog
 from frontend.views.dialogs import show_error_dialog
 from frontend.components.model_picker import open_model_picker
@@ -271,6 +272,14 @@ async def main(page: ft.Page) -> None:
         model_chip_label.value = f"{name} · {tier}" if name else "Select model"
         page.update()
 
+    saved = load_filter_settings()
+    if saved:
+        app_state.update(saved)
+        name = app_state.get("model_name", "")
+        tier = app_state.get("model_tier", "")
+        model_chip_label.value = f"{name} · {tier}" if name else "Select model"
+        rebuild_sidebar()
+
     async def _prefetch_models() -> None:
         try:
             async with httpx.AsyncClient(timeout=15) as client:
@@ -326,8 +335,9 @@ async def main(page: ft.Page) -> None:
                 ft.Container(
                     content=sidebar_col,
                     width=220,
+                    bgcolor=ft.Colors.GREY_900,
                     padding=ft.Padding(left=8, right=8, top=10, bottom=10),
-                    border=ft.Border(right=ft.BorderSide(1, ft.Colors.GREY_800)),
+                    border=ft.Border(right=ft.BorderSide(1, ft.Colors.GREY_700)),
                 ),
                 ft.Column(
                     controls=[

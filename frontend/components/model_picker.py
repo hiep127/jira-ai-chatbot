@@ -55,7 +55,7 @@ def open_model_picker(
             ),
             title=ft.Text(model["name"]),
             trailing=ft.Text(
-                f'{model["tier"]} · {model["multiplier"]}',
+                model["tier"],
                 color=ft.Colors.GREY_400,
                 size=12,
             ),

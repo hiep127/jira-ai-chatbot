@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sys
 from contextlib import asynccontextmanager
 
@@ -22,7 +23,6 @@ class ModelInfo(BaseModel):
     name: str
     vendor: str
     tier: str
-    multiplier: float
     is_other: bool
 
 
@@ -150,8 +150,12 @@ async def list_models(refresh: bool = False, request: Request = None) -> list[Mo
 
     body = r.json()
     raw_models: list[dict] = body.get("data", body.get("models", []))
+    if raw_models:
+        logger.info("[models] sample raw entry: %s", raw_models[0])
 
     _PRIMARY_PREFIXES = ("claude-", "gpt-", "o")
+
+    _DATE_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 
     def _map(m: dict) -> ModelInfo:
         model_id = m.get("id", "")
@@ -160,11 +164,18 @@ async def list_models(refresh: bool = False, request: Request = None) -> list[Mo
             name=m.get("name", model_id),
             vendor=m.get("vendor", ""),
             tier=m.get("billing_class") or m.get("model_picker_description") or "standard",
-            multiplier=float(m.get("multiplier", 1.0)),
             is_other=not any(model_id.startswith(p) for p in _PRIMARY_PREFIXES),
         )
 
     models = [_map(m) for m in raw_models]
+
+    # Deduplicate by name: prefer the entry whose id has no date-version suffix
+    seen: dict[str, ModelInfo] = {}
+    for m in models:
+        existing = seen.get(m.name)
+        if existing is None or (_DATE_SUFFIX.search(existing.id) and not _DATE_SUFFIX.search(m.id)):
+            seen[m.name] = m
+    models = list(seen.values())
 
     def _sort_key(m: ModelInfo) -> tuple:
         return (0 if m.id == "gpt-4o" else 1, m.name.lower())

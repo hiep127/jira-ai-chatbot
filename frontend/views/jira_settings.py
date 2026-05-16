@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import flet as ft
 
 from config.providers import get_jira_pat, set_jira_pat
+from config.settings import save_filter_settings
 from frontend.views.config import open_config_dialog
 from frontend.views.dialogs import show_error_dialog
 
@@ -144,6 +145,7 @@ def open_jira_settings_dialog(
             pat = pat_field.value.strip()
             if pat:
                 set_jira_pat(pat)
+            save_filter_settings(state)
             page.pop_dialog()
             if on_auth_change:
                 on_auth_change()
