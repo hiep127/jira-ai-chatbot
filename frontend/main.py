@@ -110,6 +110,7 @@ async def main(page: ft.Page) -> None:
     async def process_chat_message(prompt_text: str) -> None:
         input_field.disabled = True
         send_btn.disabled = True
+        summary_btn.disabled = True
         message_list.controls.append(_make_bubble(prompt_text, "user"))
         thinking = ft.Text("Thinking...", italic=True, color=ft.Colors.GREY_400)
         message_list.controls.append(thinking)
@@ -169,6 +170,7 @@ async def main(page: ft.Page) -> None:
 
         input_field.disabled = False
         send_btn.disabled = False
+        summary_btn.disabled = False
         input_field.focus()
         page.update()
 
