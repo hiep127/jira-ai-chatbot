@@ -189,21 +189,30 @@ def make_discovery_and_dispatch_node(batch_tool: Any) -> Callable[[dict], Any]:
                 "messages": [AIMessage(content="No actionable tickets found after filtering.")]
             }
 
-        return [Send("summarizer_daily", {"ticket_key": k}) for k in valid_keys]
+        return [Send("ticket_summarizer_node", {"ticket_id": k}) for k in valid_keys]
 
     return node
 
 
-def make_summarizer_daily_node(fetch_tool: Any) -> Callable[[TicketState], dict]:
-    """Fetch ticket metadata in Python, then summarise with a plain LLM call (no tool binding)."""
+def make_ticket_summarizer_node(fetch_tool: Any) -> Callable[[TicketState], dict]:
+    """Fetch ticket metadata, budget context locally, then summarise with a plain LLM call."""
     def node(state: TicketState) -> dict:
-        ticket_key: str = state["ticket_key"]
+        ticket_id: str = state["ticket_id"]
 
         try:
-            raw = fetch_tool.invoke({"ticket_key": ticket_key, "comment_limit": 5})
+            raw = fetch_tool.invoke({"ticket_key": ticket_id, "comment_limit": 5})
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+            if parsed.get("status") != "SUCCESS":
+                raise Exception(f"Jira tool returned non-SUCCESS status: {parsed.get('status')}")
+            data = parsed["data"]
+            slim = {
+                "title":       data.get("summary", "N/A"),
+                "description": (data.get("description") or "No description.")[:2000],
+                "comments":    [c["body"] for c in data.get("comments", [])[:5]],
+            }
             messages: list = [
                 SystemMessage(content=_SUMMARIZER_DAILY_PROMPT),
-                HumanMessage(content=f"Ticket key: {ticket_key}\n\nMetadata JSON:\n{raw}"),
+                HumanMessage(content=f"Ticket key: {ticket_id}\n\nMetadata JSON:\n{json.dumps(slim, indent=2)}"),
             ]
             llm = build_summarizer_llm(model_id=state.get("model_id", ""))
             response = llm.invoke(messages)
@@ -211,7 +220,7 @@ def make_summarizer_daily_node(fetch_tool: Any) -> Callable[[TicketState], dict]
 
         except Exception as e:
             fallback = (
-                f"{ticket_key} | ERROR | ERROR | "
+                f"{ticket_id} | ERROR | ERROR | "
                 f"Summarizer failed — {e}. Check provider credentials in Settings. | —"
             )
             return {"ticket_summaries": [fallback]}

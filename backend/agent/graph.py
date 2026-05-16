@@ -10,7 +10,7 @@ from backend.agent.nodes import (
     make_aggregate_and_report_node,
     make_discovery_and_dispatch_node,
     make_llm_node,
-    make_summarizer_daily_node,
+    make_ticket_summarizer_node,
     route_after_llm,
 )
 from backend.agent.state import AgentState
@@ -22,8 +22,8 @@ def build_graph(tools: list[Any]) -> Any:
     Full orchestrator flow (when all three MCP tools are present):
         START
           → discovery_and_dispatch   (Python: batch fetch + CCC filter → Send fan-out)
-          → summarizer_daily × N     (LLM + fetch_tool, parallel)
-          → aggregate_and_report     (Python: filter + build Markdown table + save)
+          → ticket_summarizer_node × N (LLM + fetch_tool, parallel)
+          → aggregate_summary_node   (Python: filter + build Markdown table + save)
           → END
 
     Fallback (missing critical tools): simple single-LLM loop.
@@ -49,9 +49,9 @@ def build_graph(tools: list[Any]) -> Any:
 
     graph.add_node("discovery_and_dispatch",
                    make_discovery_and_dispatch_node(batch_tool))
-    graph.add_node("summarizer_daily",
-                   make_summarizer_daily_node(metadata_tool))
-    graph.add_node("aggregate_and_report",
+    graph.add_node("ticket_summarizer_node",
+                   make_ticket_summarizer_node(metadata_tool))
+    graph.add_node("aggregate_summary_node",
                    make_aggregate_and_report_node(save_tool))
 
     graph.add_edge(START, "discovery_and_dispatch")
@@ -60,14 +60,14 @@ def build_graph(tools: list[Any]) -> Any:
     #   (a) list[Send] → LangGraph fans out; routing fn is NOT called
     #   (b) plain dict (error/empty) → routing fn is called; go to aggregate
     def route_after_dispatch(state: AgentState) -> str:
-        return "aggregate_and_report"
+        return "aggregate_summary_node"
 
     graph.add_conditional_edges(
         "discovery_and_dispatch",
         route_after_dispatch,
-        ["summarizer_daily", "aggregate_and_report"],
+        ["ticket_summarizer_node", "aggregate_summary_node"],
     )
-    graph.add_edge("summarizer_daily", "aggregate_and_report")
-    graph.add_edge("aggregate_and_report", END)
+    graph.add_edge("ticket_summarizer_node", "aggregate_summary_node")
+    graph.add_edge("aggregate_summary_node", END)
 
     return graph.compile(checkpointer=MemorySaver())

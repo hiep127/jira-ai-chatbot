@@ -27,30 +27,27 @@ FastAPI backend (port 8000)
   │
   ▼
 LangGraph Orchestrator
-  ├── orchestrator_fetch   → calls get_tickets_by_batch (MCP)
-  ├── orchestrator_tools   → executes batch fetch
-  ├── parse_tickets        → extracts flat ticket list → state.tickets
-  ├── [Send fan-out]       → one summarizer sub-graph per ticket (parallel)
-  │     └── Summarizer Sub-graph
-  │           ├── summarizer_llm    → calls fetch_ticket_metadata (MCP), synthesizes Pulse
-  │           ├── summarizer_tools
-  │           └── extract_summary   → appends "KEY | INSTANCE | STATUS | PULSE | BLOCKER" to state.summaries
-  ├── orchestrator_compile → builds High-Density markdown table
-  ├── save_tools           → calls save_summary_to_linux(ticket_key="GLOBAL", filename="backlog_sync.md")
+  ├── discovery_and_dispatch → calls get_tickets_by_batch (MCP), fans out via Send
+  ├── [Send fan-out]         → one ticket_summarizer_node per ticket (parallel)
+  │     └── ticket_summarizer_node
+  │           ├── fetches ticket via fetch_ticket_metadata (MCP)
+  │           ├── context budgeting: strips raw JSON → slim {title, description[:2000], comments[:5][body]}
+  │           └── LLM synthesizes Pulse row → appended to state.ticket_summaries
+  ├── aggregate_summary_node → compiles High-Density markdown table; calls save_summary_to_linux
   └── END
 ```
 
-Fallback: if any of the three MCP tools are missing (bundled `.exe` or MCP server down), the graph falls back to a simple single-LLM loop so the app stays usable.
+Fallback: if the live `jira-harness` MCP server is unreachable, the backend fails fast with a clear error. The mock server (`tools/mock_jira_mcp.py`) has been permanently removed.
 
 ## What's Complete
 
 ### Backend
 | File | Status | Notes |
 |---|---|---|
-| `backend/main.py` | ✅ | FastAPI app, `/ping`, `/health`, `/chat`, `/compact`; `GET /auth/github/status`, `POST /auth/github/spawn-terminal`; `GET /models` (fetches Copilot model list, `ModelInfo` schema, caches in `app.state.models_cache`, busts on `?refresh=true`); `model_id` field on `ChatRequest` and `CompactRequest`; 401 guard in `/chat` requires valid GitHub CLI token |
-| `backend/agent/state.py` | ✅ | `AgentState` and `SummarizerState` with `operator.add` reducer on `summaries` |
-| `backend/agent/nodes.py` | ✅ | All orchestrator + summarizer nodes; LLM synthesizes Pulse (not raw copy-paste) |
-| `backend/agent/graph.py` | ✅ | Full orchestrator + `_build_summarizer_subgraph`; fallback to single-LLM if tools missing |
+| `backend/main.py` | ✅ | FastAPI app, `/ping`, `/health`, `/chat`, `/compact`; `GET /auth/github/status`, `POST /auth/github/spawn-terminal`; `GET /models` (fetches Copilot model list, `ModelInfo` schema, caches in `app.state.models_cache`, busts on `?refresh=true`); `model_id` field on `ChatRequest` and `CompactRequest`; 401 guard in `/chat` requires valid GitHub CLI token; mock MCP fallback removed — live `jira-harness` server only, fail-fast on connection error |
+| `backend/agent/state.py` | ✅ | `AgentState` with `ticket_summaries: Annotated[list[str], operator.add]` reducer; `TicketState` with `ticket_id` field for map-reduce fan-out |
+| `backend/agent/nodes.py` | ✅ | `make_discovery_and_dispatch_node` fans out via `Send("ticket_summarizer_node", {"ticket_id": k})`; `make_ticket_summarizer_node` applies context budgeting (strips raw Jira JSON → slim `{title, description[:2000], comments[:5][body]}`) before LLM call; `make_aggregate_and_report_node` compiles and saves |
+| `backend/agent/graph.py` | ✅ | Flat map-reduce graph: nodes `ticket_summarizer_node` + `aggregate_summary_node`; conditional edges target list updated; all `summarizer_daily` / `aggregate_and_report` references replaced |
 | `backend/agent/llm_factory.py` | ✅ | `build_llm(model_id="")` / `build_summarizer_llm(model_id="")` — Copilot-only; `ChatOpenAI` via GitHub Copilot endpoint; falls back to `_DEFAULT_MODEL` (`gpt-4o`) / `_DEFAULT_SUMMARIZER_MODEL` (`gpt-4o-mini`) when `model_id` is empty |
 | `backend/utils/github_auth.py` | ✅ | `get_local_github_token()` (calls `gh auth token`, `CREATE_NO_WINDOW` flag suppresses console flash); `check_auth(force=False)` (module-level cache `_auth_cache`); `spawn_windows_auth_terminal()` (opens cmd.exe); `_gh_exe()` checks frozen `tools/gh.exe`, then project-root `tools/gh.exe` (dev mode), then PATH |
 | `config/providers.py` | ✅ | Jira PAT helpers + `save_active_provider` only; all multi-provider functions removed (`KEY_PROVIDERS`, `ALL_PROVIDERS`, `load_key`, `save_key`, `delete_key`, `load_active_provider`) |
@@ -94,21 +91,22 @@ Fallback: if any of the three MCP tools are missing (bundled `.exe` or MCP serve
 | Dialogs not opening / double-open crash | Migrated from `page.overlay.append` + `dialog.open=True` to `page.show_dialog()` / `page.pop_dialog()` (Flet 0.84 dialog stack API) |
 | `'"gh"' is not recognized` in auth terminal | `_gh_exe()` now checks project-root `tools/gh.exe` in dev mode; `build_release.py` downloads there first |
 
-### MCP Tools (mock)
-| Tool | File | Used by |
+### MCP Tools (live)
+| Tool | Server | Used by |
 |---|---|---|
-| `get_tickets_by_batch` | `tools/mock_jira_mcp.py` | `orchestrator_fetch` |
-| `fetch_ticket_metadata` | `tools/mock_jira_mcp.py` | `summarizer_llm` |
-| `save_summary_to_linux` | `tools/mock_jira_mcp.py` | `orchestrator_compile` |
+| `get_tickets_by_batch` | `jira-harness` (live) | `orchestrator_fetch` |
+| `fetch_ticket_metadata` | `jira-harness` (live) | `summarizer_llm` |
+| `save_summary_to_linux` | `jira-harness` (live) | `orchestrator_compile` |
+
+`tools/mock_jira_mcp.py` has been permanently deleted. The backend now strictly depends on the live `jira-harness` server; if it fails to connect on startup, the backend logs a clear error and fails fast (no silent mock fallback).
 
 ## What's Pending
 
 | # | Task | Notes |
 |---|---|---|
-| 1 | Wire up real `jira-harness` MCP server | Replace `mock_jira_mcp.py` reference in `backend/main.py` lifespan with real server command |
-| 2 | End-to-end test | Run backend, trigger backlog-summary agent, verify markdown table output and file save |
-| 3 | Rebuild `.exe` | Run `python build_release.py` once real MCP integration is confirmed working |
-| 4 | Markdown rendering in UI | Optional: render the High-Density table as formatted markdown in the Flet chat bubble instead of raw text |
+| 1 | End-to-end test | Run backend, trigger backlog-summary agent against live `jira-harness`, verify markdown table output and file save |
+| 2 | Rebuild `.exe` | Run `python build_release.py` once live MCP integration is confirmed working |
+| 3 | Markdown rendering in UI | Optional: render the High-Density table as formatted markdown in the Flet chat bubble instead of raw text |
 
 ## How to Run (Development)
 

@@ -78,19 +78,28 @@ async def lifespan(app: FastAPI):
         app.state.models_cache = None
         yield
     else:
-        async with MultiServerMCPClient(
-            {
-                "jira": {
-                    "command": sys.executable,
-                    "args": ["tools/mock_jira_mcp.py"],
-                    "transport": "stdio",
+        try:
+            async with MultiServerMCPClient(
+                {
+                    "jira": {
+                        "command": sys.executable,
+                        "args": ["tools/jira_tool.py"],
+                        "transport": "stdio",
+                    }
                 }
-            }
-        ) as mcp_client:
-            tools = mcp_client.get_tools()
-            app.state.graph = build_graph(tools)
-            app.state.models_cache = None
-            yield
+            ) as mcp_client:
+                tools = mcp_client.get_tools()
+                app.state.graph = build_graph(tools)
+                app.state.models_cache = None
+                yield
+        except Exception as exc:
+            logger.critical(
+                "[startup] Live jira-harness MCP server failed to connect: %s. "
+                "Ensure tools/jira_tool.py is present and its dependencies are installed. "
+                "Aborting startup.",
+                exc,
+            )
+            raise
 
 
 app = FastAPI(lifespan=lifespan)

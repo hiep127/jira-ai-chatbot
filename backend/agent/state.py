@@ -7,7 +7,7 @@ from langgraph.graph import MessagesState
 
 
 class TicketState(TypedDict):
-    ticket_key: str
+    ticket_id: str
 
 
 class AgentState(MessagesState):
