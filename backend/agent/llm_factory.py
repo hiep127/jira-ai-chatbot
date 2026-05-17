@@ -1,35 +1,42 @@
 from __future__ import annotations
 
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_openai import ChatOpenAI
+import asyncio
+
+from copilot import CopilotClient
+from copilot.generated.session_events import SessionEventType
+from copilot.session import PermissionHandler
 
 _DEFAULT_MODEL = "gpt-4o"
-_DEFAULT_SUMMARIZER_MODEL = "gpt-4o"
 
 
-def build_llm(model_id: str = "") -> BaseChatModel:
-    token = _get_copilot_token()
-    return ChatOpenAI(
-        api_key=token,
-        base_url="https://api.githubcopilot.com",
-        model=model_id if model_id else _DEFAULT_MODEL,
-    )
+async def call_copilot(
+    prompt: str,
+    model_id: str = "",
+    system_prompt: str = "",
+) -> str:
+    model = model_id if model_id else _DEFAULT_MODEL
+    full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+    try:
+        async with CopilotClient() as client:
+            async with await client.create_session(
+                model=model,
+                on_permission_request=PermissionHandler.approve_all,
+            ) as session:
+                done = asyncio.Event()
+                parts: list[str] = []
 
+                def on_event(event) -> None:
+                    if event.type == SessionEventType.ASSISTANT_MESSAGE_DELTA:
+                        parts.append(event.data.delta_content or "")
+                    elif event.type == SessionEventType.SESSION_IDLE:
+                        done.set()
 
-def build_summarizer_llm(model_id: str = "") -> BaseChatModel:
-    token = _get_copilot_token()
-    return ChatOpenAI(
-        api_key=token,
-        base_url="https://api.githubcopilot.com",
-        model=model_id if model_id else _DEFAULT_SUMMARIZER_MODEL,
-    )
-
-
-def _get_copilot_token() -> str:
-    from backend.utils.github_auth import get_local_github_token
-    token = get_local_github_token()
-    if token is None:
+                session.on(on_event)
+                await session.send(full_prompt)
+                await asyncio.wait_for(done.wait(), timeout=120)
+                return "".join(parts)
+    except Exception as e:
         raise RuntimeError(
-            "GitHub CLI not authenticated. Open a terminal and run 'gh auth login'."
+            f"Copilot SDK session failed — {e}. "
+            "Verify 'gh auth login' has been run and the Copilot subscription is active."
         )
-    return token

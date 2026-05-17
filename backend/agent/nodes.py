@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 from typing import Any, Callable
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage  # ToolMessage kept for make_summarizer_node (legacy path)
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END
 from langgraph.types import Send
 
-from backend.agent.llm_factory import build_llm, build_summarizer_llm
+from backend.agent.llm_factory import call_copilot
 from backend.agent.state import TicketState
 
 MAX_TOOL_ROUNDS = 5
@@ -64,11 +65,14 @@ You receive ONE ticket key and its full metadata JSON. Your steps:
 
 def make_llm_node(tools: list[Any]) -> Callable[[dict], dict]:
     """Single-agent node — used as fallback when MCP tools are unavailable."""
-    def node(state: dict) -> dict:
-        llm = build_llm(model_id=state.get("model_id", ""))
-        bound = llm.bind_tools(tools) if tools else llm
-        response = bound.invoke(state["messages"])
-        return {"messages": [response]}
+    async def node(state: dict) -> dict:
+        history = "\n".join(
+            f"{m.__class__.__name__}: {m.content}"
+            for m in state["messages"]
+            if hasattr(m, "content") and m.content
+        )
+        result = await call_copilot(prompt=history, model_id=state.get("model_id", ""))
+        return {"messages": [AIMessage(content=result)]}
     return node
 
 
@@ -83,60 +87,6 @@ def route_after_llm(state: dict) -> str:
     if hasattr(last, "tool_calls") and last.tool_calls:
         return "tools"
     return END
-
-
-# ---------------------------------------------------------------------------
-# Summarizer sub-graph nodes (kept; used by legacy fallback path)
-# ---------------------------------------------------------------------------
-
-def make_summarizer_node(fetch_tool: Any) -> Callable[[dict], dict]:
-    """Summarizer LLM — fetches metadata then synthesizes a Pulse summary."""
-    def node(state: dict) -> dict:
-        ticket = state.get("ticket", {})
-        ticket_key = ticket.get("key", "UNKNOWN")
-        messages = list(state.get("messages", []))
-
-        if not messages:
-            messages = [
-                SystemMessage(content=_SUMMARIZER_PROMPT),
-                HumanMessage(content=(
-                    f"Ticket key: {ticket_key}\n"
-                    f"Title: {ticket.get('summary', 'N/A')}\n"
-                    "Call fetch_ticket_metadata now."
-                )),
-            ]
-
-        llm = build_llm().bind_tools([fetch_tool])
-        response = llm.invoke(messages)
-        return {"messages": [response]}
-    return node
-
-
-def route_after_summarizer(state: dict) -> str:
-    last = state["messages"][-1]
-    tool_rounds = sum(
-        1 for m in state["messages"]
-        if hasattr(m, "tool_calls") and m.tool_calls
-    )
-    if tool_rounds >= MAX_TOOL_ROUNDS:
-        return "extract_summary"
-    if hasattr(last, "tool_calls") and last.tool_calls:
-        return "summarizer_tools"
-    return "extract_summary"
-
-
-def extract_summary_node(state: dict) -> dict:
-    """Pull the synthesized summary line and write it to state.summaries."""
-    for msg in reversed(state["messages"]):
-        if (
-            hasattr(msg, "content")
-            and msg.content
-            and not (hasattr(msg, "tool_calls") and msg.tool_calls)
-            and not isinstance(msg, (SystemMessage, ToolMessage))
-        ):
-            return {"summaries": [str(msg.content)]}
-    ticket_key = state.get("ticket", {}).get("key", "UNKNOWN")
-    return {"summaries": [f"{ticket_key} | UNKNOWN | UNKNOWN | No summary generated. | —"]}
 
 
 # ---------------------------------------------------------------------------
@@ -196,11 +146,13 @@ def make_discovery_and_dispatch_node(batch_tool: Any) -> Callable[[dict], Any]:
 
 def make_ticket_summarizer_node(fetch_tool: Any) -> Callable[[TicketState], dict]:
     """Fetch ticket metadata, budget context locally, then summarise with a plain LLM call."""
-    def node(state: TicketState) -> dict:
+    async def node(state: TicketState) -> dict:
         ticket_id: str = state["ticket_id"]
 
         try:
-            raw = fetch_tool.invoke({"ticket_key": ticket_id, "comment_limit": 5})
+            raw = await asyncio.to_thread(
+                fetch_tool.invoke, {"ticket_key": ticket_id, "comment_limit": 5}
+            )
             parsed = json.loads(raw) if isinstance(raw, str) else raw
             if parsed.get("status") != "SUCCESS":
                 raise Exception(f"Jira tool returned non-SUCCESS status: {parsed.get('status')}")
@@ -210,13 +162,12 @@ def make_ticket_summarizer_node(fetch_tool: Any) -> Callable[[TicketState], dict
                 "description": (data.get("description") or "No description.")[:2000],
                 "comments":    [c["body"] for c in data.get("comments", [])[:5]],
             }
-            messages: list = [
-                SystemMessage(content=_SUMMARIZER_DAILY_PROMPT),
-                HumanMessage(content=f"Ticket key: {ticket_id}\n\nMetadata JSON:\n{json.dumps(slim, indent=2)}"),
-            ]
-            llm = build_summarizer_llm(model_id=state.get("model_id", ""))
-            response = llm.invoke(messages)
-            return {"ticket_summaries": [str(response.content)]}
+            result = await call_copilot(
+                prompt=f"Ticket key: {ticket_id}\n\nMetadata JSON:\n{json.dumps(slim, indent=2)}",
+                model_id=state.get("model_id", ""),
+                system_prompt=_SUMMARIZER_DAILY_PROMPT,
+            )
+            return {"ticket_summaries": [result]}
 
         except Exception as e:
             fallback = (

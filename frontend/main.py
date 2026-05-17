@@ -293,9 +293,9 @@ async def main(page: ft.Page) -> None:
         set(_saved_active) if _saved_active is not None else {p["name"] for p in _profiles}
     )
 
-    def _build_profile_chips(current_profiles: list[dict]) -> list[ft.FilterChip]:
+    def _build_profile_chips(current_profiles: list[dict]) -> list[ft.Chip]:
         return [
-            ft.FilterChip(
+            ft.Chip(
                 label=ft.Text(p["name"]),
                 selected=p["name"] in app_state["active_profiles"],
                 on_select=lambda e, name=p["name"]: _toggle_profile(name, e.control.selected),

@@ -15,7 +15,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import BaseModel
 
 from backend.agent.graph import build_graph
-from backend.agent.llm_factory import build_llm
+from backend.agent.llm_factory import call_copilot
 from config.providers import get_jira_pat_for_profile
 from config.settings import get_profiles
 
@@ -337,14 +337,12 @@ async def compact(body: CompactRequest, request: Request) -> CompactResponse:
 
     # ── Step 2: LLM summarization call ─────────────────────────────────────
     try:
-        llm = build_llm(model_id=body.model_id)
         summary_prompt = (
             "Summarise the following conversation in 3-5 sentences. "
             "Preserve key facts, decisions, and open questions.\n\n"
             + "\n".join(f"{m.__class__.__name__}: {m.content}" for m in old_messages)
         )
-        summary_response = await llm.ainvoke([HumanMessage(content=summary_prompt)])
-        summary_text = summary_response.content
+        summary_text = await call_copilot(summary_prompt, body.model_id)
     except Exception as e:
         logger.error("[/compact] LLM summarization failed: %s", e)
         raise HTTPException(

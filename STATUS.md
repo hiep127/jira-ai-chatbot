@@ -11,7 +11,7 @@ Autonomous AI agent Windows desktop app. A user pastes a Jira parent link and th
 | Desktop UI | Flet 0.84.0 (Python) |
 | Backend API | FastAPI + Uvicorn |
 | Agent loop | LangGraph (orchestrator + summarizer sub-graph) |
-| LLM access | LangChain (GitHub Copilot endpoint only — `ChatOpenAI` via `api.githubcopilot.com`) |
+| LLM access | Official `github-copilot-sdk` — `call_copilot(prompt, model_id, system_prompt)` async helper; CopilotClient event-driven session; falls back to `gpt-4o` when `model_id` is empty |
 | Tool routing | MCP via `langchain-mcp-adapters` |
 | Jira integration | Jira REST API (MCP tools: `get_tickets_by_batch`, `fetch_ticket_metadata`, `save_summary_to_linux`) |
 | Credential storage | `keyring` (Windows Credential Manager) |
@@ -29,10 +29,10 @@ FastAPI backend (port 8000)
 LangGraph Orchestrator
   ├── discovery_and_dispatch → calls get_tickets_by_batch (MCP), fans out via Send
   ├── [Send fan-out]         → one ticket_summarizer_node per ticket (parallel)
-  │     └── ticket_summarizer_node
-  │           ├── fetches ticket via fetch_ticket_metadata (MCP)
+  │     └── ticket_summarizer_node  [async]
+  │           ├── asyncio.to_thread(fetch_ticket_metadata MCP)
   │           ├── context budgeting: strips raw JSON → slim {title, description[:2000], comments[:5][body]}
-  │           └── LLM synthesizes Pulse row → appended to state.ticket_summaries
+  │           └── await call_copilot() → Pulse row appended to state.ticket_summaries
   ├── aggregate_summary_node → compiles High-Density markdown table; calls save_summary_to_linux
   └── END
 ```
@@ -44,11 +44,11 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 ### Backend
 | File | Status | Notes |
 |---|---|---|
-| `backend/main.py` | ✅ | FastAPI app, `/ping`, `/health`, `/chat`, `/compact`; `GET /auth/github/status`, `POST /auth/github/spawn-terminal`; `GET /models` (fetches Copilot model list, `ModelInfo` schema, caches in `app.state.models_cache`, busts on `?refresh=true`); `model_id` field on `ChatRequest` and `CompactRequest`; 401 guard in `/chat` requires valid GitHub CLI token; mock MCP fallback removed — live `jira-harness` server only, fail-fast on connection error; `POST /reload-profiles` endpoint hot-reloads MCP subprocess with updated credentials without app restart; `_build_mcp_env()` reads `get_profiles()` + keyring → builds `JIRA_PROFILES_JSON` env var; `asyncio.Lock` prevents concurrent reload races |
+| `backend/main.py` | ✅ | FastAPI app, `/ping`, `/health`, `/chat`, `/compact`; `GET /auth/github/status`, `POST /auth/github/spawn-terminal`; `GET /models` (fetches Copilot model list, `ModelInfo` schema, caches in `app.state.models_cache`, busts on `?refresh=true`); `model_id` field on `ChatRequest` and `CompactRequest`; 401 guard in `/chat` requires valid GitHub CLI token; mock MCP fallback removed — live `jira-harness` server only, fail-fast on connection error; `POST /reload-profiles` endpoint hot-reloads MCP subprocess with updated credentials without app restart; `_build_mcp_env()` reads `get_profiles()` + keyring → builds `JIRA_PROFILES_JSON` env var; `asyncio.Lock` prevents concurrent reload races; `/compact` endpoint now uses `await call_copilot(summary_prompt, model_id)` instead of `build_llm` + `ainvoke` |
 | `backend/agent/state.py` | ✅ | `AgentState` with `ticket_summaries: Annotated[list[str], operator.add]` reducer; `TicketState` with `ticket_id` field for map-reduce fan-out |
-| `backend/agent/nodes.py` | ✅ | `make_discovery_and_dispatch_node` fans out via `Send("ticket_summarizer_node", {"ticket_id": k})`; `make_ticket_summarizer_node` applies context budgeting (strips raw Jira JSON → slim `{title, description[:2000], comments[:5][body]}`) before LLM call; `make_aggregate_and_report_node` compiles and saves |
+| `backend/agent/nodes.py` | ✅ | Deleted 3 dead legacy functions (`make_summarizer_node`, `route_after_summarizer`, `extract_summary_node`); `make_llm_node` and `make_ticket_summarizer_node` converted to `async def`; MCP `fetch_tool.invoke` wrapped in `asyncio.to_thread`; LLM calls replaced with `await call_copilot()`; `ToolMessage` import removed |
 | `backend/agent/graph.py` | ✅ | Flat map-reduce graph: nodes `ticket_summarizer_node` + `aggregate_summary_node`; conditional edges target list updated; all `summarizer_daily` / `aggregate_and_report` references replaced |
-| `backend/agent/llm_factory.py` | ✅ | `build_llm(model_id="")` / `build_summarizer_llm(model_id="")` — Copilot-only; `ChatOpenAI` via GitHub Copilot endpoint; falls back to `_DEFAULT_MODEL` (`gpt-4o`) / `_DEFAULT_SUMMARIZER_MODEL` (`gpt-4o-mini`) when `model_id` is empty |
+| `backend/agent/llm_factory.py` | ✅ | Full rewrite: removed `build_llm`/`build_summarizer_llm` and all LangChain imports; new `async call_copilot(prompt, model_id, system_prompt)` helper uses `CopilotClient` from official `github-copilot-sdk`; event-driven via `session.on()` + `SESSION_IDLE`; 120 s `asyncio.wait_for` timeout; falls back to `gpt-4o` when `model_id` is empty |
 | `backend/utils/github_auth.py` | ✅ | `get_local_github_token()` (calls `gh auth token`, `CREATE_NO_WINDOW` flag suppresses console flash); `check_auth(force=False)` (module-level cache `_auth_cache`); `spawn_windows_auth_terminal()` (opens cmd.exe); `_gh_exe()` checks frozen `tools/gh.exe`, then project-root `tools/gh.exe` (dev mode), then PATH |
 | `config/providers.py` | ✅ | Per-profile PAT helpers: `get_jira_pat_for_profile(name)`, `set_jira_pat_for_profile(name, pat)`, `delete_jira_pat_for_profile(name)` stored in Windows Credential Manager under `jira_pat_{name.lower()}`; legacy `get_jira_pat`/`set_jira_pat` preserved for backward compatibility |
 | `config/settings.py` | ✅ | `get_profiles() -> list[dict]` and `save_profiles(profiles)` for persisting Jira profiles (non-sensitive fields only: `name`, `host`, `custom_jql`) to `settings.json`; `"profiles"` added to `_PERSIST_KEYS` |
@@ -79,7 +79,7 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 |---|---|---|
 | `build_release.py` | ✅ | Preferred build script: runs PyInstaller, copies `jira_server.env`, downloads `gh.exe` to `tools/gh.exe` then copies into `dist/JiraAgent/tools/`, copies `wiki/`; Flet version pre-flight check |
 | `build.bat` | ✅ | Legacy helper: kills running `Jira AI.exe`, locates `flet.exe`, runs PyInstaller only (no gh.exe download) |
-| `Jira AI.spec` | ✅ | `collect_all()` for LangChain/LangGraph; `console=False`; hidden imports for uvicorn and keyring; output folder `dist/JiraAgent/` |
+| `Jira AI.spec` | ✅ | `collect_all()` for LangGraph/LangChain core/MCP adapters + `copilot` (official SDK); removed `langchain_openai` and `langchain_anthropic`; `console=False`; hidden imports for uvicorn and keyring; output folder `dist/JiraAgent/` |
 | `dist/JiraAgent/Jira AI.exe` | ✅ | Last known-good build; `gh.exe` bundled at `dist/JiraAgent/tools/gh.exe` |
 
 **Known runtime fixes already applied:**

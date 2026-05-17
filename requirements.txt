@@ -6,7 +6,6 @@ keyring
 pytest
 pytest-asyncio
 langgraph
-langchain-openai
-langchain-anthropic
+github-copilot-sdk
 langchain-mcp-adapters
 pyinstaller
