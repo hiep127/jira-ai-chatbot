@@ -57,7 +57,7 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 ### Frontend
 | File | Status | Notes |
 |---|---|---|
-| `frontend/main.py` | ✅ | Flet desktop app; starts backend in-process (thread); 10 s health-check timeout; auth guard container (`refresh_auth_state()`); `app_state` carries `model_id`/`model_name`/`model_tier`; `model_id` forwarded in `/chat` and `/compact` payloads; model chip button opens `open_model_picker`; GitHub Copilot 401 → `page.show_dialog(SnackBar)`; `FilterChip` active-profile selector row (between Jira Parent Link and send controls); `_toggle_profile()` mutates `app_state["active_profiles"]` set; active profiles persisted to `settings.json` and restored on launch; `prefixes` in `/chat` payload set from active profiles; chip row rebuilt on `on_settings_saved` callback |
+| `frontend/main.py` | ✅ | Flet desktop app; starts backend in-process (thread); 10 s health-check timeout; auth guard container (`refresh_auth_state()`); `app_state` carries `model_id`/`model_name`/`model_tier`; `model_id` forwarded in `/chat` and `/compact` payloads; model chip button opens `open_model_picker`; GitHub Copilot 401 → `page.show_dialog(SnackBar)`; `FilterChip` active-profile chips rendered in **left sidebar** via `rebuild_sidebar()` (Active Profiles section above Active Query/JQL section); standalone `profile_chips_row` variable removed; `_build_profile_chips`, `_toggle_profile`, `_profiles` defined before `load_filter_settings()` to eliminate forward-reference; `_on_settings_saved()` refreshes `_profiles` in-place then calls `rebuild_sidebar()` (no redundant chip-row update); active profiles persisted to `settings.json` and restored on launch; `prefixes` in `/chat` payload set from active profiles |
 | `frontend/components/__init__.py` | ✅ | Empty package marker for `frontend/components/` |
 | `frontend/components/model_picker.py` | ✅ | `open_model_picker(page, app_state, on_model_selected)` — `AlertDialog` (360 px); search field + Refresh + Gear header; `ft.ListView` of `ListTile` rows with checkmark on active model; collapsible "Other Models" section; `ft.ProgressRing` while fetching; 401 → closes picker and opens `open_config_dialog`; writes `model_id`/`model_name`/`model_tier` into `app_state` |
 | `frontend/views/config.py` | ✅ | Copilot auth dialog (`open_config_dialog`); proactive `_check_copilot_status()` via `page.run_task`; `on_save`/`on_close` async; `page.show_dialog()` / `page.pop_dialog()` (Flet 0.84 API); `on_closed` callback |
@@ -67,7 +67,7 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 **UI features:**
 - Chat message bubbles (user / assistant)
 - Jira Parent Link input field
-- Multi-profile chip row: `FilterChip` toggles per Jira profile; selection persisted across restarts; chips rebuilt after settings dialog closes
+- Multi-profile chip row: `FilterChip` toggles per Jira profile rendered in **left sidebar** (Active Profiles section above JQL); selection persisted across restarts; sidebar rebuilt after settings dialog closes
 - Settings gear icon → opens Jira profile CRUD dialog (two-panel, add/edit/delete profiles)
 - Model chip button (header) → opens model picker; selected model name shown on chip
 - Auth guard: if GitHub CLI not authenticated, chat is locked and an overlay prompt is shown
