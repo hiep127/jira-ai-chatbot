@@ -317,10 +317,8 @@ async def main(page: ft.Page) -> None:
         app_state["active_profiles"] = (
             set(saved["active_profiles"]) if "active_profiles" in saved else {p["name"] for p in _profiles}
         )
-        rebuild_sidebar()
     else:
         app_state["active_profiles"] = {p["name"] for p in _profiles}
-        rebuild_sidebar()
 
     async def _prefetch_models() -> None:
         try:
@@ -406,6 +404,7 @@ async def main(page: ft.Page) -> None:
             vertical_alignment=ft.CrossAxisAlignment.START,
         )
     )
+    rebuild_sidebar()
 
 
 ft.app(target=main)
