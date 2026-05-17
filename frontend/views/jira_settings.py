@@ -125,7 +125,7 @@ def open_jira_settings_dialog(
         _show_form()
         page.update()
 
-    async def _save_profile(e: ft.ControlEvent) -> None:
+    async def _do_save_profile() -> bool:
         name = name_field.value.strip()
         host = host_field.value.strip()
 
@@ -134,14 +134,14 @@ def open_jira_settings_dialog(
                 page,
                 "Validation Error: Name is required.\n\nRemediation: Enter a unique profile name (e.g. SPAWS).",
             )
-            return
+            return False
 
         if not host:
             show_error_dialog(
                 page,
                 "Validation Error: Host URL is required.\n\nRemediation: Enter the full Jira server URL (e.g. https://jira.example.com).",
             )
-            return
+            return False
 
         try:
             parsed = urlparse(host)
@@ -152,7 +152,7 @@ def open_jira_settings_dialog(
                 page,
                 "Validation Error: Host URL is invalid.\n\nRemediation: Use a full URL including https:// (e.g. https://jira.example.com).",
             )
-            return
+            return False
 
         profiles[selected_idx[0]] = {
             "name": name,
@@ -171,16 +171,19 @@ def open_jira_settings_dialog(
                     "Remediation: Check that Windows Credential Manager is accessible "
                     "(Control Panel → Credential Manager → Windows Credentials).",
                 )
-                return
+                return False
 
         try:
             save_profiles(profiles)
         except Exception as exc:
             show_error_dialog(page, f"Failed to save profiles: {exc}")
-            return
+            return False
 
         profile_list_view.controls = _build_list_tiles()
-        page.show_dialog(ft.SnackBar(ft.Text("Profile saved."), open=True))
+        return True
+
+    async def _save_profile(e: ft.ControlEvent) -> None:
+        await _do_save_profile()
         page.update()
 
     async def _delete_profile(e: ft.ControlEvent) -> None:
@@ -202,6 +205,11 @@ def open_jira_settings_dialog(
         page.update()
 
     async def on_save_and_close(e: ft.ControlEvent) -> None:
+        if selected_idx[0] >= 0:
+            saved_ok = await _do_save_profile()
+            if not saved_ok:
+                return
+
         page.pop_dialog()
         if on_auth_change:
             on_auth_change()

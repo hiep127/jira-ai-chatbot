@@ -196,7 +196,19 @@ async def main(page: ft.Page) -> None:
         await process_chat_message(text)
 
     async def on_daily_summary(e: ft.ControlEvent) -> None:
-        if not app_state.get("custom_jql"):
+        jql = app_state.get("custom_jql", "")
+        if not jql:
+            active_names = app_state.get("active_profiles", set())
+            parts = [
+                p["custom_jql"] for p in _profiles
+                if p["name"] in active_names and p.get("custom_jql")
+            ]
+            if len(parts) == 1:
+                jql = parts[0]
+            elif len(parts) > 1:
+                jql = " OR ".join(f"({q})" for q in parts)
+
+        if not jql:
             show_error_dialog(
                 page,
                 "Cannot generate summary: No JQL query configured.\n\n"
@@ -204,9 +216,13 @@ async def main(page: ft.Page) -> None:
                 "Custom JQL Query before requesting a summary."
             )
             return
+
+        prev_jql = app_state.get("custom_jql", "")
+        app_state["custom_jql"] = jql
         await process_chat_message(
             "Please generate a detailed daily summary based on my currently active Jira filters."
         )
+        app_state["custom_jql"] = prev_jql
 
     async def on_compact(e: ft.ControlEvent) -> None:
         input_field.disabled = True
