@@ -17,3 +17,6 @@ All Python code written for this application MUST adhere to the following rules.
 
 ## 4. No Placeholder Code
 - Do not leave `pass`, `TODO`, or `FIXME` blocks in the code. If a function is defined in the plan, it must be fully implemented.
+
+## 5. GitHub Copilot API
+- Use `get_local_github_token()` directly as `Authorization: Bearer <token>` when calling `api.githubcopilot.com`. Do NOT call `https://api.github.com/copilot_internal/v2/token` to exchange it for a session token. That endpoint is an undocumented internal API restricted to the official VS Code Copilot OAuth app; tokens from the `gh` CLI return 404. The public `api.githubcopilot.com` endpoints (`/models`, `/chat/completions`) accept the OAuth token directly without any exchange step.

@@ -84,3 +84,4 @@ pytest tests/path/to/test_file.py::test_function_name -v
 - **No global state in FastAPI**: Pass configuration through dependency injection, not module-level globals.
 - **Flet ↔ FastAPI**: The Flet app communicates with FastAPI over `localhost` HTTP. Flet should not import backend modules directly.
 - **Flet API rules (MANDATORY)**: Before planning or writing any frontend (`frontend/`) code, read `docs/flet_implementation_rules.md` in full. The installed version is `flet==0.84.0`. Key differences from older Flet: dialogs use `page.show_dialog()` / `page.pop_dialog()` (NOT `page.open()` / `page.close()`); icons use `ft.Icons.*` (NOT `ft.icons.*`); colors use `ft.Colors.*` (NOT `ft.colors.*`); layout helpers like `ft.padding.all()` / `ft.border.only()` do not exist — use `ft.Padding()` / `ft.Border()` directly.
+- **Coding standards**: All code must comply with `CODING_STANDARDS.md`. Read it before writing any backend or frontend code.
