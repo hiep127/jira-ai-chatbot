@@ -51,6 +51,34 @@ def check_auth(force: bool = False) -> bool:
     return _auth_cache
 
 
+async def check_copilot_subscription() -> dict:
+    """
+    Returns {"ok": True} on success, or {"ok": False, "status": int|None, "detail": str} on failure.
+    """
+    import httpx
+
+    oauth = get_local_github_token()
+    if not oauth:
+        return {"ok": False, "status": None, "detail": "gh not authenticated"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://api.github.com/copilot_internal/v2/token",
+                headers={
+                    "Authorization": f"token {oauth}",
+                    "Accept": "application/json",
+                    "editor-version": "vscode/1.85.0",
+                    "editor-plugin-version": "copilot-chat/0.12.0",
+                    "user-agent": "GitHubCopilotChat/0.12.0",
+                },
+            )
+        if r.status_code == 200:
+            return {"ok": True}
+        return {"ok": False, "status": r.status_code, "detail": r.text[:200]}
+    except Exception as e:
+        return {"ok": False, "status": None, "detail": str(e)}
+
+
 def spawn_windows_auth_terminal() -> None:
     """Open a new cmd.exe window for interactive 'gh auth login'.
 

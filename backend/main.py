@@ -101,6 +101,13 @@ class GitHubSpawnTerminalResponse(BaseModel):
     message: str
 
 
+class CopilotStatusResponse(BaseModel):
+    gh_authenticated: bool
+    copilot_ok: bool
+    error_status: int | None = None
+    error_detail: str | None = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if getattr(sys, "frozen", False):
@@ -210,6 +217,25 @@ async def github_auth_status(force: bool = False) -> GitHubAuthStatusResponse:
     from backend.utils.github_auth import check_auth
     authenticated = await asyncio.to_thread(check_auth, force)
     return GitHubAuthStatusResponse(authenticated=authenticated)
+
+
+@app.get("/auth/copilot/status", response_model=CopilotStatusResponse)
+async def copilot_status() -> CopilotStatusResponse:
+    from backend.utils.github_auth import check_auth, check_copilot_subscription
+    gh_ok = await asyncio.to_thread(check_auth, True)
+    if not gh_ok:
+        return CopilotStatusResponse(
+            gh_authenticated=False,
+            copilot_ok=False,
+            error_detail="gh CLI not authenticated",
+        )
+    result = await check_copilot_subscription()
+    return CopilotStatusResponse(
+        gh_authenticated=True,
+        copilot_ok=result["ok"],
+        error_status=result.get("status"),
+        error_detail=result.get("detail"),
+    )
 
 
 @app.post("/auth/github/spawn-terminal")

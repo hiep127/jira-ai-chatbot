@@ -44,12 +44,27 @@ async def _get_copilot_token() -> str:
             r = await client.get(
                 "https://api.github.com/copilot_internal/v2/token",
                 headers={
-                    "Authorization": f"Bearer {oauth_token}",
+                    "Authorization": f"token {oauth_token}",
                     "Accept": "application/json",
                     **_EDITOR_HEADERS,
                 },
             )
-            r.raise_for_status()
+
+        if r.status_code == 404:
+            raise RuntimeError(
+                "Copilot API call failed — No active GitHub Copilot subscription found on this account "
+                "(HTTP 404). Visit github.com/settings/copilot to check your seat, or open Settings "
+                "and configure an OpenAI/Anthropic API key instead."
+            )
+        elif r.status_code in (401, 403):
+            raise RuntimeError(
+                f"Copilot API call failed — GitHub token rejected (HTTP {r.status_code}). "
+                "Re-run 'gh auth login' to refresh your credentials."
+            )
+        elif r.status_code != 200:
+            raise RuntimeError(
+                f"Copilot API call failed — GitHub API error {r.status_code}: {r.text[:200]}"
+            )
 
         data = r.json()
         _COPILOT_TOKEN = data["token"]
@@ -82,6 +97,25 @@ async def call_copilot(
             )
             r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if status == 404:
+            raise RuntimeError(
+                "Copilot API call failed — No active GitHub Copilot subscription found on this account "
+                "(HTTP 404). Visit github.com/settings/copilot to check your seat, or open Settings "
+                "and configure an OpenAI/Anthropic API key instead."
+            )
+        elif status in (401, 403):
+            raise RuntimeError(
+                f"Copilot API call failed — GitHub token rejected (HTTP {status}). "
+                "Re-run 'gh auth login' to refresh your credentials."
+            )
+        else:
+            raise RuntimeError(f"Copilot API call failed — GitHub API error {status}: {e}")
+    except httpx.ConnectError:
+        raise RuntimeError(
+            "Copilot API call failed — Cannot reach api.github.com. Check your network connection."
+        )
     except Exception as e:
         raise RuntimeError(
             f"Copilot API call failed — {e}. "
