@@ -74,6 +74,11 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 - Compact button → `/compact` with active `model_id`
 - Generate Daily Summary button → sends pre-built JQL-aware prompt
 
+### Tests
+| File | Status | Notes |
+|---|---|---|
+| `tests/test_copilot_api.py` | ✅ | Standalone CLI script: authenticates via `gh auth token`, fetches live Copilot model list, prompts user to pick a model, sends a test prompt to `api.githubcopilot.com/chat/completions` and prints the response. Self-contained — no imports from `backend/` or `config/`. Uses `httpx` synchronously. Auth uses `Authorization: Bearer <token>` directly (no `copilot_internal` token exchange). |
+
 ### Build Pipeline
 | File | Status | Notes |
 |---|---|---|
