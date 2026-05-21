@@ -225,9 +225,15 @@ def report_request_cost(headers_before: dict, headers_after: dict) -> None:
 
 
 def test_jira_fetch() -> None:
-    settings_path = Path(__file__).resolve().parent.parent / "settings.json"
-    if not settings_path.exists():
+    project_root = Path(__file__).resolve().parent.parent
+    candidates = [
+        project_root / "settings.json",
+        project_root / "dist" / "JiraAgent" / "settings.json",
+    ]
+    settings_path = next((p for p in candidates if p.exists()), None)
+    if settings_path is None:
         print("  settings.json not found — add a Jira profile in Settings first.")
+        print(f"  Searched: {', '.join(str(p) for p in candidates)}")
         return
 
     try:
