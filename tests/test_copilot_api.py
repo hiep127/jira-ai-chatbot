@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
+import keyring
+from jira import JIRA
 
 _EDITOR_HEADERS: dict[str, str] = {
     "editor-version": "vscode/1.85.0",
@@ -222,6 +224,57 @@ def report_request_cost(headers_before: dict, headers_after: dict) -> None:
         print("\n  → No change detected — model may be free tier or quota not tracked here.")
 
 
+def test_jira_fetch() -> None:
+    settings_path = Path(__file__).resolve().parent.parent / "settings.json"
+    if not settings_path.exists():
+        print("  settings.json not found — add a Jira profile in Settings first.")
+        return
+
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"  Failed to read settings.json: {exc}")
+        return
+
+    profiles: list[dict] = settings.get("profiles", [])
+    if not profiles:
+        print("  No profiles found in settings.json — add a Jira profile in Settings first.")
+        return
+
+    for profile in profiles:
+        name: str = profile.get("name", "")
+        host: str = profile.get("host", "")
+        jql_base: str = profile.get("custom_jql", "") or "resolution = Unresolved"
+        jql = f"{jql_base} ORDER BY created ASC"
+
+        if not name or not host:
+            print(f"  Skipping incomplete profile: {profile}")
+            continue
+
+        pat = keyring.get_password("ai-agent-app", f"jira_pat_{name.lower()}")
+        if not pat:
+            print(f"  [{name}] No PAT found in Windows Credential Manager — save credentials in Settings first.")
+            continue
+
+        print(f"\n  Profile: {name}  ({host})")
+        print(f"  JQL: {jql}")
+
+        try:
+            client = JIRA(server=host, token_auth=pat, options={"rest_api_version": "2"})
+            issues = client.search_issues(jql, maxResults=5)
+        except Exception as exc:
+            print(f"  ERROR connecting to Jira: {exc}")
+            continue
+
+        if not issues:
+            print("  No tickets matched.")
+            continue
+
+        print(f"  Fetched {len(issues)} ticket(s):")
+        for issue in issues:
+            print(f"    {issue.key}  {issue.fields.summary[:80]}")
+
+
 def main() -> None:
     print("=== US1: GitHub Copilot CLI Authentication ===")
     token = authenticate()
@@ -243,6 +296,9 @@ def main() -> None:
 
     print("\n=== US3b: Premium Request Cost for This Call ===")
     report_request_cost(models_headers, chat_headers)
+
+    print("\n=== US4: Jira Ticket Fetch ===")
+    test_jira_fetch()
 
 
 if __name__ == "__main__":
