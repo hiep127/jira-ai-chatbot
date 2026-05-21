@@ -150,7 +150,7 @@ def prompt_model_choice(models: list[dict]) -> str:
         print(f"Invalid choice — enter a number between 1 and {len(models)}.")
 
 
-def test_chat(token: str, model_id: str) -> None:
+def test_chat(token: str, model_id: str) -> dict:
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -181,6 +181,45 @@ def test_chat(token: str, model_id: str) -> None:
 
     content = response.json()["choices"][0]["message"]["content"]
     print(f"\nResponse:\n{content}")
+    return dict(response.headers)
+
+
+def report_request_cost(headers_before: dict, headers_after: dict) -> None:
+    _QUOTA_PREFIXES = ("x-ratelimit", "x-copilot")
+
+    def _extract(headers: dict) -> dict:
+        return {
+            k.lower(): v for k, v in headers.items()
+            if k.lower().startswith(_QUOTA_PREFIXES)
+        }
+
+    before = _extract(headers_before)
+    after = _extract(headers_after)
+    all_keys = sorted(set(before) | set(after))
+
+    if not all_keys:
+        print("  No quota/rate-limit headers returned by either endpoint.")
+        print("  The API may not expose per-request cost through headers.")
+        return
+
+    consumed_any = False
+    print(f"  {'Header':<45} {'Before':>12} {'After':>12} {'Delta':>8}")
+    print(f"  {'─'*45} {'─'*12} {'─'*12} {'─'*8}")
+    for key in all_keys:
+        b_val = before.get(key, "—")
+        a_val = after.get(key, "—")
+        delta = ""
+        if b_val.isdigit() and a_val.isdigit():
+            diff = int(b_val) - int(a_val)
+            if diff != 0:
+                delta = f"{'-' if diff > 0 else '+'}{abs(diff)}"
+                consumed_any = True
+        print(f"  {key:<45} {b_val:>12} {a_val:>12} {delta:>8}")
+
+    if consumed_any:
+        print("\n  → Delta shows premium requests consumed by this single call.")
+    else:
+        print("\n  → No change detected — model may be free tier or quota not tracked here.")
 
 
 def main() -> None:
@@ -188,19 +227,22 @@ def main() -> None:
     token = authenticate()
 
     print("\n=== US2: Available Models ===")
-    models, response_headers = list_models(token)
+    models, models_headers = list_models(token)
     model_id = prompt_model_choice(models)
     print(f"Selected: {model_id}")
 
     print("\n=== US2b: Premium Quota & Rate Limits ===")
-    check_quota(token, response_headers)
+    check_quota(token, models_headers)
 
     print("\n=== US2c: Model Details ===")
     print_model_details(models)
 
     print("\n=== US3: Test API Call ===")
     print('Prompt: "What is the weather like today in Da Nang, Vietnam?"')
-    test_chat(token, model_id)
+    chat_headers = test_chat(token, model_id)
+
+    print("\n=== US3b: Premium Request Cost for This Call ===")
+    report_request_cost(models_headers, chat_headers)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ This is a hard constraint — it exists to protect the user's API budget and ens
 
 ## Project Overview
 
-Autonomous AI agent desktop app for Windows. A Flet desktop UI connects to a local FastAPI backend. The agent loop is powered by the `github-copilot-sdk` Python package, which authenticates via the local GitHub Copilot CLI to access enterprise models. All external tool invocations are routed through the Model Context Protocol (MCP).
+Autonomous AI agent desktop app for Windows. A Flet desktop UI connects to a local FastAPI backend. The agent loop makes direct HTTPS calls to `api.githubcopilot.com` using the OAuth token from the local GitHub CLI (`gh auth token`) — no third-party AI SDK is used. All external tool invocations are routed through the Model Context Protocol (MCP).
 
 ## Tech Stack
 
@@ -22,8 +22,8 @@ Autonomous AI agent desktop app for Windows. A Flet desktop UI connects to a loc
 |---|---|
 | Desktop UI | Flet 0.84.0 (Python) |
 | Backend API | FastAPI (Python) |
-| Agent loop | `github-copilot-sdk` (Python) |
-| Tool routing | MCP — use the SDK's native MCP support |
+| Agent loop | Direct `httpx` calls to `api.githubcopilot.com` (GitHub CLI OAuth token) |
+| Tool routing | MCP via `langchain-mcp-adapters` + `MultiServerMCPClient` |
 | Jira integration | Jira REST API v3 |
 | Dependency management | `pip` + `requirements.txt` |
 

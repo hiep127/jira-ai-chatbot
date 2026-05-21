@@ -1,13 +1,17 @@
-#!/home/worker/mcp-env/bin/python3
-import os, zipfile, json, subprocess, shutil
+import os
+import re
+import zipfile
+import json
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from jira import JIRA
 from pydantic import BaseModel, Field
 
 mcp = FastMCP("jira-harness")
-WORKSPACE_ROOT = "/home/worker/jira_workspace"
-AGENT_WIKI_ROOT = "/home/worker/Copilot_Memory/wiki/topics"
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+WORKSPACE_ROOT = _PROJECT_ROOT / "jira_workspace"
+AGENT_WIKI_ROOT = _PROJECT_ROOT / "wiki" / "topics"
 
 _raw = os.getenv("JIRA_PROFILES_JSON", "[]")
 try:
@@ -153,13 +157,40 @@ def fetch_ticket_metadata(args: TicketMetadataArgs) -> str:
 
 @mcp.tool()
 def grep_logs(args: GrepLogsArgs) -> str:
-    """Recursively searches logs for a specific error/timestamp."""
+    """Recursively searches log files in the ticket workspace for a pattern."""
     try:
-        target_path = os.path.join(WORKSPACE_ROOT, args.ticket_key)
-        cmd = ["grep", "-r", "-i", "-A", "2", "-B", "2", args.pattern, target_path]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        out = result.stdout[:8000] if result.stdout else "No matches found."
-        return json.dumps({"status": "SUCCESS", "data": out}, indent=2)
+        ticket_dir = WORKSPACE_ROOT / args.ticket_key
+        if not ticket_dir.exists():
+            return json.dumps({"status": "SUCCESS", "data": "No workspace found for this ticket."}, indent=2)
+
+        compiled = re.compile(args.pattern, re.IGNORECASE)
+        matches: list[str] = []
+        context_before = 2
+        context_after = 2
+
+        for file_path in ticket_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+            try:
+                lines = file_path.read_text(errors="ignore").splitlines()
+            except OSError:
+                continue
+
+            for i, line in enumerate(lines):
+                if compiled.search(line):
+                    start = max(0, i - context_before)
+                    end = min(len(lines), i + context_after + 1)
+                    block = "\n".join(
+                        f"{'>' if j == i else ' '} {lines[j]}" for j in range(start, end)
+                    )
+                    matches.append(f"--- {file_path.name}:{i + 1} ---\n{block}")
+                    if len("\n\n".join(matches)) > 8000:
+                        break
+            if len("\n\n".join(matches)) > 8000:
+                break
+
+        out = "\n\n".join(matches) if matches else "No matches found."
+        return json.dumps({"status": "SUCCESS", "data": out[:8000]}, indent=2)
     except Exception as e:
         return json.dumps({"status": "ERROR", "message": str(e), "retryable": False}, indent=2)
 
@@ -168,14 +199,13 @@ def grep_logs(args: GrepLogsArgs) -> str:
 def read_log_tail(args: ReadLogTailArgs) -> str:
     """Reads the end of a specific log file."""
     try:
-        full_path = os.path.normpath(os.path.join(WORKSPACE_ROOT, args.ticket_key, args.relative_path))
-        if not full_path.startswith(WORKSPACE_ROOT):
-            return json.dumps({"status": "ERROR", "message": "Path Escape detected.", "retryable": False})
+        full_path = (WORKSPACE_ROOT / args.ticket_key / args.relative_path).resolve()
+        if not full_path.is_relative_to(WORKSPACE_ROOT):
+            return json.dumps({"status": "ERROR", "message": "Path escape detected.", "retryable": False})
 
-        with open(full_path, 'r', errors='ignore') as f:
-            content = f.readlines()
-            out = "".join(content[-args.lines:])
-            return json.dumps({"status": "SUCCESS", "data": out}, indent=2)
+        lines = full_path.read_text(errors="ignore").splitlines()
+        out = "\n".join(lines[-args.lines:])
+        return json.dumps({"status": "SUCCESS", "data": out}, indent=2)
     except Exception as e:
         return json.dumps({"status": "ERROR", "message": str(e), "retryable": False}, indent=2)
 
@@ -184,56 +214,62 @@ def read_log_tail(args: ReadLogTailArgs) -> str:
 def fetch_and_prepare_data(args: FetchDataArgs) -> str:
     """Downloads and recursively extracts nested logs/zips for deep diagnostics."""
     try:
+        import py7zr
+
         jira = get_jira_client(ticket_key=args.ticket_key)
-        ticket_dir = os.path.join(WORKSPACE_ROOT, args.ticket_key)
-        os.makedirs(ticket_dir, exist_ok=True)
+        ticket_dir = WORKSPACE_ROOT / args.ticket_key
+        ticket_dir.mkdir(parents=True, exist_ok=True)
 
         issue = jira.issue(args.ticket_key)
         for a in issue.fields.attachment:
-            dest = os.path.join(ticket_dir, a.filename)
-            with open(dest, "wb") as f:
-                f.write(a.get())
+            dest = ticket_dir / a.filename
+            dest.write_bytes(a.get())
 
-        processed_archives = set()
+        processed_archives: set[Path] = set()
         extracted_something = True
 
         while extracted_something:
             extracted_something = False
 
-            for file_path in list(Path(ticket_dir).rglob("*")):
-                if not file_path.is_file() or str(file_path) in processed_archives:
+            for file_path in list(ticket_dir.rglob("*")):
+                if not file_path.is_file() or file_path in processed_archives:
                     continue
 
                 fname = file_path.name.lower()
-                is_archive = (
-                    fname.endswith(".7z.001")
-                    or (fname.endswith(".7z") and ".7z." not in fname)
-                    or fname.endswith(".zip")
-                )
+                is_zip = fname.endswith(".zip")
+                is_7z = fname.endswith(".7z") or fname.endswith(".7z.001")
 
-                if is_archive:
-                    processed_archives.add(str(file_path))
+                if is_zip:
+                    processed_archives.add(file_path)
                     try:
-                        subprocess.run(
-                            ["7z", "x", str(file_path), f"-o{file_path.parent}", "-y"],
-                            check=True,
-                            capture_output=True,
-                        )
+                        with zipfile.ZipFile(file_path) as zf:
+                            zf.extractall(file_path.parent)
                         file_path.unlink()
                         extracted_something = True
-                    except subprocess.CalledProcessError as e:
-                        print(f"Warning: Failed to extract {file_path.name} - {e.stderr.decode(errors='ignore')}")
+                    except Exception as e:
+                        print(f"Warning: Failed to extract {file_path.name} - {e}")
 
-        manifest = {"bugreports": [], "driver_logs": [], "other": []}
-        for p in Path(ticket_dir).rglob("*"):
-            if p.is_file() and p.suffix.lower() in [".log", ".txt", ".out"]:
-                rel = f"./{p.relative_to(ticket_dir)}"
+                elif is_7z:
+                    processed_archives.add(file_path)
+                    try:
+                        with py7zr.SevenZipFile(file_path, mode="r") as zf:
+                            zf.extractall(path=file_path.parent)
+                        file_path.unlink()
+                        extracted_something = True
+                    except Exception as e:
+                        print(f"Warning: Failed to extract {file_path.name} - {e}")
+
+        manifest: dict[str, list] = {"bugreports": [], "driver_logs": [], "other": []}
+        for p in ticket_dir.rglob("*"):
+            if p.is_file() and p.suffix.lower() in (".log", ".txt", ".out"):
+                rel = str(p.relative_to(ticket_dir))
+                entry = {"name": p.name, "path": rel}
                 if "bugreport" in p.name.lower():
-                    manifest["bugreports"].append({"name": p.name, "path": rel})
+                    manifest["bugreports"].append(entry)
                 elif "driver" in p.name.lower():
-                    manifest["driver_logs"].append({"name": p.name, "path": rel})
+                    manifest["driver_logs"].append(entry)
                 else:
-                    manifest["other"].append({"name": p.name, "path": rel})
+                    manifest["other"].append(entry)
 
         return json.dumps({"status": "SUCCESS", "manifest": manifest}, indent=2)
     except Exception as e:
@@ -245,14 +281,13 @@ def fetch_and_prepare_data(args: FetchDataArgs) -> str:
 def save_summary_to_linux(args: SaveSummaryArgs) -> str:
     """Writes diagnostic reports locally to the isolated ticket folder."""
     try:
-        path = os.path.normpath(os.path.join(WORKSPACE_ROOT, args.ticket_key, args.filename))
-        if not path.startswith(WORKSPACE_ROOT):
+        full_path = (WORKSPACE_ROOT / args.ticket_key / args.filename).resolve()
+        if not full_path.is_relative_to(WORKSPACE_ROOT):
             return json.dumps({"status": "ERROR", "message": "Path traversal detected.", "retryable": False})
 
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.write(args.content)
-        return json.dumps({"status": "SUCCESS", "message": f"Saved to {path}"})
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(args.content, encoding="utf-8")
+        return json.dumps({"status": "SUCCESS", "message": f"Saved to {full_path}"})
     except Exception as e:
         return json.dumps({"status": "ERROR", "message": str(e), "retryable": False})
 
@@ -261,17 +296,15 @@ def save_summary_to_linux(args: SaveSummaryArgs) -> str:
 def save_pattern_to_memory(args: SavePatternArgs) -> str:
     """Saves learned patterns to the agent's localized long-term Wiki memory."""
     try:
-        path = os.path.normpath(os.path.join(AGENT_WIKI_ROOT, args.topic_folder, args.filename))
-        if not path.startswith(AGENT_WIKI_ROOT):
+        full_path = (AGENT_WIKI_ROOT / args.topic_folder / args.filename).resolve()
+        if not full_path.is_relative_to(AGENT_WIKI_ROOT):
             return json.dumps({"status": "ERROR", "message": "Path traversal blocked. Stay in wiki bounds.", "retryable": False})
 
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.write(args.content)
-
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(args.content, encoding="utf-8")
         return json.dumps({
             "status": "SUCCESS",
-            "message": f"Learned pattern successfully committed to memory at {path}"
+            "message": f"Learned pattern successfully committed to memory at {full_path}"
         })
     except Exception as e:
         return json.dumps({"status": "ERROR", "message": str(e), "retryable": False})

@@ -6,6 +6,7 @@ keyring
 pytest
 pytest-asyncio
 langgraph
-github-copilot-sdk
 langchain-mcp-adapters
+jira
+py7zr
 pyinstaller
