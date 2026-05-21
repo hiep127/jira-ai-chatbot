@@ -117,6 +117,7 @@ def get_tickets_by_batch(args: BatchScanArgs) -> str:
                     jql = args.custom_jql
                 else:
                     jql_base = config["jql"] or "resolution = Unresolved"
+                    jql_base = re.sub(r'\s+order\s+by\s+\S.*$', '', jql_base, flags=re.IGNORECASE).strip()
                     jql = f"{jql_base} {order_clause}"
 
                 issues = jira.search_issues(jql, maxResults=30)
