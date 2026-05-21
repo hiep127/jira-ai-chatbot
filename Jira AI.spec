@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 # Collect all submodules + data files for LangChain packages
 _datas, _binaries, _hiddenimports = [], [], []
-for _pkg in ['flet', 'langchain_core', 'langgraph', 'langchain_mcp_adapters']:
+for _pkg in ['flet', 'flet_desktop', 'langchain_core', 'langgraph', 'langchain_mcp_adapters']:
     _d, _b, _h = collect_all(_pkg)
     _datas += _d
     _binaries += _b
