@@ -7,8 +7,6 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
-import keyring
-from jira import JIRA
 
 _EDITOR_HEADERS: dict[str, str] = {
     "editor-version": "vscode/1.85.0",
@@ -225,60 +223,59 @@ def report_request_cost(headers_before: dict, headers_after: dict) -> None:
 
 
 def test_jira_fetch() -> None:
+    import os
+    import sys
+
+    # Add project root to path so config.* and tools.* are importable when
+    # running the script directly from any working directory.
     project_root = Path(__file__).resolve().parent.parent
-    candidates = [
-        project_root / "settings.json",
-        project_root / "dist" / "JiraAgent" / "settings.json",
-    ]
-    settings_path = next((p for p in candidates if p.exists()), None)
-    if settings_path is None:
-        print("  settings.json not found — add a Jira profile in Settings first.")
-        print(f"  Searched: {', '.join(str(p) for p in candidates)}")
-        return
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
-    try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        print(f"  Failed to read settings.json: {exc}")
-        return
+    from config.settings import get_profiles
+    from config.providers import get_jira_pat_for_profile
 
-    profiles: list[dict] = settings.get("profiles", [])
+    profiles = get_profiles()
     if not profiles:
-        print("  No profiles found in settings.json — add a Jira profile in Settings first.")
+        print("  No profiles found — add a Jira profile in Settings first.")
         return
 
-    for profile in profiles:
-        name: str = profile.get("name", "")
-        host: str = profile.get("host", "")
-        jql_base: str = profile.get("custom_jql", "") or "resolution = Unresolved"
-        jql = f"{jql_base} ORDER BY created ASC"
+    # Build JIRA_PROFILES_JSON exactly as _build_mcp_env() does in backend/main.py.
+    payload = [
+        {
+            "name": p["name"],
+            "host": p.get("host", ""),
+            "token": get_jira_pat_for_profile(p["name"]) or "",
+            "jql": p.get("custom_jql", ""),
+        }
+        for p in profiles
+        if p.get("name")
+    ]
+    os.environ["JIRA_PROFILES_JSON"] = json.dumps(payload)
 
-        if not name or not host:
-            print(f"  Skipping incomplete profile: {profile}")
+    # Import after env var is set — jira_tool reads it at module level.
+    # Use importlib to avoid caching a stale module if the env var changed.
+    import importlib
+    import tools.jira_tool as jira_tool
+    importlib.reload(jira_tool)
+
+    from tools.jira_tool import get_tickets_by_batch, BatchScanArgs
+
+    print(f"  Profiles loaded: {[p['name'] for p in payload]}")
+    result_json = get_tickets_by_batch(BatchScanArgs())
+    result = json.loads(result_json)
+
+    if result.get("status") != "SUCCESS":
+        print(f"  ERROR: {result.get('message', result_json)}")
+        return
+
+    for profile_name, tickets in result["data"].items():
+        if isinstance(tickets, dict) and "error" in tickets:
+            print(f"\n  [{profile_name}] ERROR: {tickets['error']}")
             continue
-
-        pat = keyring.get_password("ai-agent-app", f"jira_pat_{name.lower()}")
-        if not pat:
-            print(f"  [{name}] No PAT found in Windows Credential Manager — save credentials in Settings first.")
-            continue
-
-        print(f"\n  Profile: {name}  ({host})")
-        print(f"  JQL: {jql}")
-
-        try:
-            client = JIRA(server=host, token_auth=pat, options={"rest_api_version": "2"})
-            issues = client.search_issues(jql, maxResults=5)
-        except Exception as exc:
-            print(f"  ERROR connecting to Jira: {exc}")
-            continue
-
-        if not issues:
-            print("  No tickets matched.")
-            continue
-
-        print(f"  Fetched {len(issues)} ticket(s):")
-        for issue in issues:
-            print(f"    {issue.key}  {issue.fields.summary[:80]}")
+        print(f"\n  [{profile_name}] Fetched {len(tickets)} ticket(s):")
+        for t in tickets:
+            print(f"    {t['key']}  {t['summary'][:80]}")
 
 
 def main() -> None:
