@@ -1,7 +1,9 @@
 """Standalone GitHub Copilot API test script. Run with: python tests/test_copilot_api.py"""
 
+import json
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -14,6 +16,7 @@ _EDITOR_HEADERS: dict[str, str] = {
 }
 
 _COPILOT_BASE = "https://api.githubcopilot.com"
+_GITHUB_API = "https://api.github.com"
 
 
 def _gh_exe() -> str:
@@ -45,7 +48,7 @@ def authenticate() -> str:
     return token
 
 
-def list_models(token: str) -> list[dict]:
+def list_models(token: str) -> tuple[list[dict], dict]:
     headers = {"Authorization": f"Bearer {token}", **_EDITOR_HEADERS}
     try:
         with httpx.Client() as client:
@@ -54,7 +57,7 @@ def list_models(token: str) -> list[dict]:
         print(f"Network error: {exc}")
         sys.exit(1)
 
-    if response.status_code == 401 or response.status_code == 403:
+    if response.status_code in (401, 403):
         print("Token rejected — re-run 'gh auth login'")
         sys.exit(1)
     if response.status_code == 404:
@@ -62,7 +65,72 @@ def list_models(token: str) -> list[dict]:
         sys.exit(1)
     response.raise_for_status()
 
-    return response.json()["data"]
+    return response.json()["data"], dict(response.headers)
+
+
+def check_quota(token: str, response_headers: dict) -> None:
+    # Rate limit / quota headers returned directly by the Copilot API
+    ratelimit_keys = [
+        k for k in response_headers
+        if k.lower().startswith(("x-ratelimit", "x-copilot"))
+    ]
+    if ratelimit_keys:
+        print("  Rate-limit headers from Copilot API:")
+        for key in sorted(ratelimit_keys):
+            val = response_headers[key]
+            if "reset" in key.lower() and val.isdigit():
+                readable = datetime.fromtimestamp(int(val)).strftime("%Y-%m-%d %H:%M:%S")
+                val = f"{val}  ({readable} local)"
+            print(f"    {key}: {val}")
+    else:
+        print("  No rate-limit headers found in Copilot API response.")
+
+    # GitHub REST API — Copilot billing / subscription info
+    print("\n  Fetching Copilot billing info from GitHub API...")
+    gh_headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(f"{_GITHUB_API}/user/copilot_billing", headers=gh_headers)
+    except httpx.ConnectError as exc:
+        print(f"  Network error: {exc}")
+        return
+
+    if resp.status_code == 404:
+        print("  No Copilot subscription found (or endpoint not available for this account type).")
+        return
+    if resp.status_code in (401, 403):
+        print(f"  Access denied ({resp.status_code}) — token may lack the 'copilot' scope.")
+        return
+    if not resp.is_success:
+        print(f"  Unexpected status {resp.status_code}: {resp.text[:200]}")
+        return
+
+    print("  Copilot billing details:")
+    _pretty_print_dict(resp.json(), indent=4)
+
+
+def print_model_details(models: list[dict]) -> None:
+    print(f"  Total models available: {len(models)}\n")
+    for model in models:
+        print(f"  {'─' * 52}")
+        _pretty_print_dict(model, indent=4)
+    print(f"  {'─' * 52}")
+
+
+def _pretty_print_dict(data: dict, indent: int = 2) -> None:
+    pad = " " * indent
+    for key, value in data.items():
+        if isinstance(value, dict):
+            print(f"{pad}{key}:")
+            _pretty_print_dict(value, indent + 2)
+        elif isinstance(value, list):
+            print(f"{pad}{key}: {json.dumps(value)}")
+        else:
+            print(f"{pad}{key}: {value}")
 
 
 def print_model_menu(models: list[dict]) -> None:
@@ -103,7 +171,7 @@ def test_chat(token: str, model_id: str) -> None:
         print(f"Network error: {exc}")
         sys.exit(1)
 
-    if response.status_code == 401 or response.status_code == 403:
+    if response.status_code in (401, 403):
         print("Token rejected — re-run 'gh auth login'")
         sys.exit(1)
     if response.status_code == 404:
@@ -120,9 +188,15 @@ def main() -> None:
     token = authenticate()
 
     print("\n=== US2: Available Models ===")
-    models = list_models(token)
+    models, response_headers = list_models(token)
     model_id = prompt_model_choice(models)
     print(f"Selected: {model_id}")
+
+    print("\n=== US2b: Premium Quota & Rate Limits ===")
+    check_quota(token, response_headers)
+
+    print("\n=== US2c: Model Details ===")
+    print_model_details(models)
 
     print("\n=== US3: Test API Call ===")
     print('Prompt: "What is the weather like today in Da Nang, Vietnam?"')
