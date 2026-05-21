@@ -232,10 +232,19 @@ def test_jira_fetch() -> None:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    from config.settings import get_profiles
     from config.providers import get_jira_pat_for_profile
 
-    profiles = get_profiles()
+    candidates = [
+        project_root / "settings.json",
+        project_root / "dist" / "JiraAgent" / "settings.json",
+    ]
+    settings_path = next((p for p in candidates if p.exists()), None)
+    if settings_path is None:
+        print("  settings.json not found — add a Jira profile in Settings first.")
+        print(f"  Searched: {', '.join(str(p) for p in candidates)}")
+        return
+
+    profiles: list[dict] = json.loads(settings_path.read_text(encoding="utf-8")).get("profiles", [])
     if not profiles:
         print("  No profiles found — add a Jira profile in Settings first.")
         return
