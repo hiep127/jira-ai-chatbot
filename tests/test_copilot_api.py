@@ -311,7 +311,7 @@ def prompt_ticket_choice(tickets: list[dict]) -> str | None:
         print(f"  Invalid choice — enter a number between 1 and {len(tickets)}, or press Enter to skip.")
 
 
-def test_investigate_ticket(ticket_key: str) -> None:
+def test_investigate_ticket(ticket_key: str, token: str, model_id: str) -> None:
     from tools.jira_tool import fetch_ticket_metadata, TicketMetadataArgs
 
     print(f"  Fetching metadata for {ticket_key}...")
@@ -340,6 +340,70 @@ def test_investigate_ticket(ticket_key: str) -> None:
                 print(f"      {line}")
     else:
         print("\n  No comments.")
+
+    print(f"\n=== US5c: Copilot Investigation ===")
+    run_investigator_agent(data, token, model_id)
+
+
+def run_investigator_agent(data: dict, token: str, model_id: str) -> None:
+    comments = data.get("comments", [])
+    comments_block = ""
+    if comments:
+        lines = []
+        for c in comments:
+            lines.append(f"[{c['date']}] {c['author']}:\n{c['body']}")
+        comments_block = "\n\n".join(lines)
+    else:
+        comments_block = "(no comments)"
+
+    user_message = (
+        f"Ticket: {data['key']}\n"
+        f"Status: {data['status']}\n"
+        f"Assignee: {data['assignee']}\n"
+        f"Summary: {data['summary']}\n\n"
+        f"Description:\n{data.get('description') or 'No description.'}\n\n"
+        f"Recent comments:\n{comments_block}"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        **_EDITOR_HEADERS,
+    }
+    payload = {
+        "model": model_id,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a senior support engineer investigating a Jira ticket. "
+                    "Analyze the details provided and give:\n"
+                    "1. Likely root cause\n"
+                    "2. Suggested next investigation steps\n"
+                    "3. Any patterns recognized from the description and comments"
+                ),
+            },
+            {"role": "user", "content": user_message},
+        ],
+    }
+
+    print(f"  Sending to {model_id}...\n")
+    try:
+        with httpx.Client(timeout=60) as client:
+            response = client.post(
+                f"{_COPILOT_BASE}/chat/completions", headers=headers, json=payload
+            )
+    except httpx.ConnectError as exc:
+        print(f"  Network error: {exc}")
+        return
+
+    if not response.is_success:
+        print(f"  API error {response.status_code}: {response.text[:300]}")
+        return
+
+    analysis = response.json()["choices"][0]["message"]["content"]
+    for line in analysis.splitlines():
+        print(f"  {line}")
 
 
 def main() -> None:
@@ -372,7 +436,7 @@ def main() -> None:
         ticket_key = prompt_ticket_choice(tickets)
         if ticket_key:
             print(f"\n=== US5b: Investigating {ticket_key} ===")
-            test_investigate_ticket(ticket_key)
+            test_investigate_ticket(ticket_key, token, model_id)
         else:
             print("  Skipped.")
     else:
