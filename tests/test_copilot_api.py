@@ -133,21 +133,37 @@ def _pretty_print_dict(data: dict, indent: int = 2) -> None:
             print(f"{pad}{key}: {value}")
 
 
+def _chat_models(models: list[dict]) -> list[dict]:
+    return [
+        m for m in models
+        if m.get("capabilities", {}).get("type") == "chat"
+        and m.get("model_picker_enabled", False)
+    ]
+
+
 def print_model_menu(models: list[dict]) -> None:
     print("[US2] Available models:")
-    for i, model in enumerate(models, start=1):
-        print(f"  [{i}]  {model['id']}")
+    print(f"  {'#':>3}  {'Model ID':<32}  {'Context':>8}  {'Max Out':>8}  Name")
+    print(f"  {'─'*3}  {'─'*32}  {'─'*8}  {'─'*8}  {'─'*24}")
+    for i, m in enumerate(models, start=1):
+        limits = m.get("capabilities", {}).get("limits", {})
+        ctx = limits.get("max_context_window_tokens", 0)
+        out = limits.get("max_output_tokens", 0)
+        ctx_str = f"{ctx // 1000}k" if ctx else "—"
+        out_str = f"{out // 1000}k" if out else "—"
+        print(f"  [{i:>2}]  {m['id']:<32}  {ctx_str:>8}  {out_str:>8}  {m.get('name', '')}")
 
 
 def prompt_model_choice(models: list[dict]) -> str:
-    print_model_menu(models)
+    chat_models = _chat_models(models)
+    print_model_menu(chat_models)
     while True:
         raw = input("Enter number: ").strip()
         if raw.isdigit():
             idx = int(raw)
-            if 1 <= idx <= len(models):
-                return models[idx - 1]["id"]
-        print(f"Invalid choice — enter a number between 1 and {len(models)}.")
+            if 1 <= idx <= len(chat_models):
+                return chat_models[idx - 1]["id"]
+        print(f"Invalid choice — enter a number between 1 and {len(chat_models)}.")
 
 
 def test_chat(token: str, model_id: str) -> dict:
@@ -311,7 +327,7 @@ def prompt_ticket_choice(tickets: list[dict]) -> str | None:
         print(f"  Invalid choice — enter a number between 1 and {len(tickets)}, or press Enter to skip.")
 
 
-def test_investigate_ticket(ticket_key: str, token: str, model_id: str) -> None:
+def test_investigate_ticket(ticket_key: str, token: str, model_id: str, max_prompt_tokens: int) -> None:
     from tools.jira_tool import fetch_ticket_metadata, TicketMetadataArgs
 
     print(f"  Fetching metadata for {ticket_key}...")
@@ -342,10 +358,10 @@ def test_investigate_ticket(ticket_key: str, token: str, model_id: str) -> None:
         print("\n  No comments.")
 
     print(f"\n=== US5c: Copilot Investigation ===")
-    run_investigator_agent(data, token, model_id)
+    run_investigator_agent(data, token, model_id, max_prompt_tokens)
 
 
-def run_investigator_agent(data: dict, token: str, model_id: str) -> None:
+def run_investigator_agent(data: dict, token: str, model_id: str, max_prompt_tokens: int) -> None:
     comments = data.get("comments", [])
     comments_block = ""
     if comments:
@@ -387,6 +403,12 @@ def run_investigator_agent(data: dict, token: str, model_id: str) -> None:
         ],
     }
 
+    # Rough guard: 1 token ≈ 4 chars. Reserve ~500 tokens for system prompt + overhead.
+    char_budget = (max_prompt_tokens - 500) * 4
+    if len(user_message) > char_budget:
+        user_message = user_message[:char_budget]
+        print(f"  (prompt truncated to fit {max_prompt_tokens:,}-token limit)\n")
+
     print(f"  Sending to {model_id}...\n")
     try:
         with httpx.Client(timeout=60) as client:
@@ -414,6 +436,8 @@ def main() -> None:
     models, models_headers = list_models(token)
     model_id = prompt_model_choice(models)
     print(f"Selected: {model_id}")
+    _sel = next((m for m in _chat_models(models) if m["id"] == model_id), {})
+    max_prompt_tokens = _sel.get("capabilities", {}).get("limits", {}).get("max_prompt_tokens", 64000)
 
     print("\n=== US2b: Premium Quota & Rate Limits ===")
     check_quota(token, models_headers)
@@ -436,7 +460,7 @@ def main() -> None:
         ticket_key = prompt_ticket_choice(tickets)
         if ticket_key:
             print(f"\n=== US5b: Investigating {ticket_key} ===")
-            test_investigate_ticket(ticket_key, token, model_id)
+            test_investigate_ticket(ticket_key, token, model_id, max_prompt_tokens)
         else:
             print("  Skipped.")
     else:
