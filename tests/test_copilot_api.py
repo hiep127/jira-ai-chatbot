@@ -222,7 +222,7 @@ def report_request_cost(headers_before: dict, headers_after: dict) -> None:
         print("\n  → No change detected — model may be free tier or quota not tracked here.")
 
 
-def test_jira_fetch() -> None:
+def test_jira_fetch() -> list[dict]:
     import os
     import sys
 
@@ -242,12 +242,12 @@ def test_jira_fetch() -> None:
     if settings_path is None:
         print("  settings.json not found — add a Jira profile in Settings first.")
         print(f"  Searched: {', '.join(str(p) for p in candidates)}")
-        return
+        return []
 
     profiles: list[dict] = json.loads(settings_path.read_text(encoding="utf-8")).get("profiles", [])
     if not profiles:
         print("  No profiles found — add a Jira profile in Settings first.")
-        return
+        return []
 
     # Build JIRA_PROFILES_JSON exactly as _build_mcp_env() does in backend/main.py.
     payload = [
@@ -276,8 +276,9 @@ def test_jira_fetch() -> None:
 
     if result.get("status") != "SUCCESS":
         print(f"  ERROR: {result.get('message', result_json)}")
-        return
+        return []
 
+    all_tickets: list[dict] = []
     for profile_name, tickets in result["data"].items():
         if isinstance(tickets, dict) and "error" in tickets:
             print(f"\n  [{profile_name}] ERROR: {tickets['error']}")
@@ -285,6 +286,60 @@ def test_jira_fetch() -> None:
         print(f"\n  [{profile_name}] Fetched {len(tickets)} ticket(s):")
         for t in tickets:
             print(f"    {t['key']}  {t['summary'][:80]}")
+            all_tickets.append({"key": t["key"], "summary": t["summary"], "profile": profile_name})
+
+    return all_tickets
+
+
+def list_tickets_menu(tickets: list[dict]) -> None:
+    print("[US5] All tickets from configured filters:")
+    for i, t in enumerate(tickets, start=1):
+        summary = t["summary"][:70]
+        print(f"  [{i:>3}]  {t['key']:<18}  {summary:<70}  ({t['profile']})")
+
+
+def prompt_ticket_choice(tickets: list[dict]) -> str | None:
+    list_tickets_menu(tickets)
+    while True:
+        raw = input("\nEnter ticket number to investigate (or press Enter to skip): ").strip()
+        if raw == "":
+            return None
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(tickets):
+                return tickets[idx - 1]["key"]
+        print(f"  Invalid choice — enter a number between 1 and {len(tickets)}, or press Enter to skip.")
+
+
+def test_investigate_ticket(ticket_key: str) -> None:
+    from tools.jira_tool import fetch_ticket_metadata, TicketMetadataArgs
+
+    print(f"  Fetching metadata for {ticket_key}...")
+    result_json = fetch_ticket_metadata(TicketMetadataArgs(ticket_key=ticket_key))
+    result = json.loads(result_json)
+
+    if result.get("status") != "SUCCESS":
+        print(f"  ERROR: {result.get('message', result_json)}")
+        return
+
+    data = result["data"]
+    print(f"\n  Key       : {data['key']}")
+    print(f"  Status    : {data['status']}")
+    print(f"  Assignee  : {data['assignee']}")
+    print(f"  Summary   : {data['summary']}")
+    print(f"\n  Description:\n")
+    for line in (data.get("description") or "No description.").splitlines():
+        print(f"    {line}")
+
+    comments = data.get("comments", [])
+    if comments:
+        print(f"\n  Recent comments ({len(comments)}):")
+        for c in comments:
+            print(f"\n    [{c['date']}] {c['author']}:")
+            for line in c["body"].splitlines():
+                print(f"      {line}")
+    else:
+        print("\n  No comments.")
 
 
 def main() -> None:
@@ -310,7 +365,18 @@ def main() -> None:
     report_request_cost(models_headers, chat_headers)
 
     print("\n=== US4: Jira Ticket Fetch ===")
-    test_jira_fetch()
+    tickets = test_jira_fetch()
+
+    print("\n=== US5: Select Ticket to Investigate ===")
+    if tickets:
+        ticket_key = prompt_ticket_choice(tickets)
+        if ticket_key:
+            print(f"\n=== US5b: Investigating {ticket_key} ===")
+            test_investigate_ticket(ticket_key)
+        else:
+            print("  Skipped.")
+    else:
+        print("  No tickets available to investigate.")
 
 
 if __name__ == "__main__":
