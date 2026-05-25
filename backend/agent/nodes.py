@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 from typing import Any, Callable
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage
 from langgraph.graph import END
 from langgraph.types import Send
 
@@ -16,6 +15,21 @@ from backend.agent.state import TicketState
 MAX_TOOL_ROUNDS = 5
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_text(result: Any) -> str:
+    """Extract plain text from an MCP tool ainvoke result.
+
+    langchain-mcp-adapters 0.2+ returns a list of content-block dicts
+    (e.g. [{'type': 'text', 'text': '...', 'id': '...'}]), not a plain string.
+    """
+    if isinstance(result, str):
+        return result
+    if isinstance(result, list):
+        for item in result:
+            if isinstance(item, dict) and item.get("type") == "text":
+                return item["text"]
+    return str(result)
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -99,13 +113,16 @@ _CLOSED_STATUSES = {"Closed", "Integrated", "Merged_VLM", "Done"}
 
 def make_discovery_and_dispatch_node(batch_tool: Any) -> Callable[[dict], Any]:
     """Python-only node: fetch ticket keys via batch tool, filter, fan-out via Send."""
-    def node(state: dict) -> Any:
+    async def node(state: dict) -> Any:
         prefixes = state.get("prefixes", ["SPAWS", "LGE"])
         mode = state.get("mode", "TEAM")
         custom_jql = state.get("custom_jql", "")
 
         try:
-            raw = batch_tool.invoke({"prefixes": prefixes, "mode": mode, "custom_jql": custom_jql})
+            result = await batch_tool.ainvoke(
+                {"args": {"prefixes": prefixes, "mode": mode, "custom_jql": custom_jql}}
+            )
+            raw = _extract_text(result)
         except Exception as e:
             return {
                 "messages": [AIMessage(content=(
@@ -150,9 +167,10 @@ def make_ticket_summarizer_node(fetch_tool: Any) -> Callable[[TicketState], dict
         ticket_id: str = state["ticket_id"]
 
         try:
-            raw = await asyncio.to_thread(
-                fetch_tool.invoke, {"ticket_key": ticket_id, "comment_limit": 5}
+            tool_result = await fetch_tool.ainvoke(
+                {"args": {"ticket_key": ticket_id, "comment_limit": 5}}
             )
+            raw = _extract_text(tool_result)
             parsed = json.loads(raw) if isinstance(raw, str) else raw
             if parsed.get("status") != "SUCCESS":
                 raise Exception(f"Jira tool returned non-SUCCESS status: {parsed.get('status')}")
@@ -162,12 +180,12 @@ def make_ticket_summarizer_node(fetch_tool: Any) -> Callable[[TicketState], dict
                 "description": (data.get("description") or "No description.")[:2000],
                 "comments":    [c["body"] for c in data.get("comments", [])[:5]],
             }
-            result = await call_copilot(
+            summary = await call_copilot(
                 prompt=f"Ticket key: {ticket_id}\n\nMetadata JSON:\n{json.dumps(slim, indent=2)}",
                 model_id=state.get("model_id", ""),
                 system_prompt=_SUMMARIZER_DAILY_PROMPT,
             )
-            return {"ticket_summaries": [result]}
+            return {"ticket_summaries": [summary]}
 
         except Exception as e:
             fallback = (
@@ -181,7 +199,7 @@ def make_ticket_summarizer_node(fetch_tool: Any) -> Callable[[TicketState], dict
 
 def make_aggregate_and_report_node(save_tool: Any) -> Callable[[dict], dict]:
     """Python-only node: parse accumulated summaries, build Markdown table, save, return."""
-    def node(state: dict) -> dict:
+    async def node(state: dict) -> dict:
         lge_base = os.getenv("JIRA_LGE_BASE_URL", "")
         spaws_base = os.getenv("JIRA_SPAWS_BASE_URL", "")
 
@@ -217,11 +235,9 @@ def make_aggregate_and_report_node(save_tool: Any) -> Callable[[dict], dict]:
             table = "No active tickets after filtering."
 
         try:
-            save_tool.invoke({
-                "ticket_key": "GLOBAL",
-                "filename": "backlog_sync.md",
-                "content": table,
-            })
+            await save_tool.ainvoke(
+                {"args": {"ticket_key": "GLOBAL", "filename": "backlog_sync.md", "content": table}}
+            )
         except Exception as e:
             logger.warning(
                 "[aggregate] save failed — %s. "
