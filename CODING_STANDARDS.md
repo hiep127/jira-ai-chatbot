@@ -20,3 +20,19 @@ All Python code written for this application MUST adhere to the following rules.
 
 ## 5. GitHub Copilot API
 - Use `get_local_github_token()` directly as `Authorization: Bearer <token>` when calling `api.githubcopilot.com`. Do NOT call `https://api.github.com/copilot_internal/v2/token` to exchange it for a session token. That endpoint is an undocumented internal API restricted to the official VS Code Copilot OAuth app; tokens from the `gh` CLI return 404. The public `api.githubcopilot.com` endpoints (`/models`, `/chat/completions`) accept the OAuth token directly without any exchange step.
+
+## 6. MCP / `langchain-mcp-adapters` API
+- As of version 0.1.0, `MultiServerMCPClient` is **not** a context manager. Never call `__aenter__` / `__aexit__` on it — they raise `NotImplementedError`. Always use the stateless pattern and always `await get_tools()`:
+  ```python
+  # CORRECT
+  client = MultiServerMCPClient({...})
+  tools = await client.get_tools()
+
+  # WRONG — raises NotImplementedError
+  async with MultiServerMCPClient({...}) as client:
+      tools = await client.get_tools()
+
+  # WRONG — missing await, returns a coroutine not a list
+  tools = client.get_tools()
+  ```
+- Each tool invocation opens its own short-lived subprocess session automatically; there is no persistent connection to manage or close.
