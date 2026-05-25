@@ -4,7 +4,9 @@ import json
 import logging
 from typing import Any
 
-from config.paths import get_base_path
+from config.paths import get_base_path, migrate_legacy_settings
+
+migrate_legacy_settings()
 
 logger = logging.getLogger(__name__)
 

@@ -251,6 +251,7 @@ def test_jira_fetch() -> list[dict]:
     from config.providers import get_jira_pat_for_profile
 
     candidates = [
+        Path.home() / ".jira_agent_app" / "settings.json",
         project_root / "settings.json",
         project_root / "dist" / "JiraAgent" / "settings.json",
     ]

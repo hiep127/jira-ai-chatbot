@@ -50,8 +50,9 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 | `backend/agent/graph.py` | ✅ | Flat map-reduce graph: nodes `ticket_summarizer_node` + `aggregate_summary_node`; conditional edges target list updated; all `summarizer_daily` / `aggregate_and_report` references replaced |
 | `backend/agent/llm_factory.py` | ✅ | Full rewrite: removed `build_llm`/`build_summarizer_llm` and all LangChain imports; new `async call_copilot(prompt, model_id, system_prompt)` helper uses `CopilotClient` from official `github-copilot-sdk`; event-driven via `session.on()` + `SESSION_IDLE`; 120 s `asyncio.wait_for` timeout; falls back to `gpt-4o` when `model_id` is empty; fixed `Authorization` header from `Bearer` to `token` prefix in `_get_copilot_token()`; per-status-code error classification: 404 → no Copilot subscription message, 401/403 → re-authenticate instruction, `ConnectError` → network check message |
 | `backend/utils/github_auth.py` | ✅ | `get_local_github_token()` (calls `gh auth token`, `CREATE_NO_WINDOW` flag suppresses console flash); `check_auth(force=False)` (module-level cache `_auth_cache`); `spawn_windows_auth_terminal()` (opens cmd.exe); `_gh_exe()` checks frozen `tools/gh.exe`, then project-root `tools/gh.exe` (dev mode), then PATH; new `check_copilot_subscription()` async function hits `/copilot_internal/v2/token` and returns `{"ok": bool, "status": int|None, "detail": str}` |
+| `config/paths.py` | ✅ | `get_base_path()` returns `~/.jira_agent_app/` (OS user-home, persistent across builds); `_get_legacy_base_path()` locates old `settings.json` in volatile exe/dev dirs; `migrate_legacy_settings()` copies legacy `settings.json` to the new location on first run (idempotent, wrapped in try/except) |
 | `config/providers.py` | ✅ | Per-profile PAT helpers: `get_jira_pat_for_profile(name)`, `set_jira_pat_for_profile(name, pat)`, `delete_jira_pat_for_profile(name)` stored in Windows Credential Manager under `jira_pat_{name.lower()}`; legacy `get_jira_pat`/`set_jira_pat` preserved for backward compatibility |
-| `config/settings.py` | ✅ | `get_profiles() -> list[dict]` and `save_profiles(profiles)` for persisting Jira profiles (non-sensitive fields only: `name`, `host`, `custom_jql`) to `settings.json`; `"profiles"` added to `_PERSIST_KEYS` |
+| `config/settings.py` | ✅ | `get_profiles() -> list[dict]` and `save_profiles(profiles)` for persisting Jira profiles (non-sensitive fields only: `name`, `host`, `custom_jql`) to `settings.json`; `"profiles"` added to `_PERSIST_KEYS`; imports and calls `migrate_legacy_settings()` at module init so migration runs before the first settings read |
 | `tools/jira_tool.py` | ✅ | Dynamic `JIRA_CONFIGS` built from `JIRA_PROFILES_JSON` env var injected by backend at subprocess start (no hardcoded credentials); updated `get_jira_client(profile_name, ticket_key)` routing; `get_tickets_by_batch` prefixes now refer to profile names (defaults to all configured profiles); `clone_ticket_from_spaws_to_lge` uses named profile lookup |
 
 ### Frontend
@@ -77,7 +78,7 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 ### Tests
 | File | Status | Notes |
 |---|---|---|
-| `tests/test_copilot_api.py` | ✅ | Standalone CLI script: authenticates via `gh auth token`, fetches live Copilot model list, prompts user to pick a model, sends a test prompt to `api.githubcopilot.com/chat/completions` and prints the response. Self-contained — no imports from `backend/` or `config/`. Uses `httpx` synchronously. Auth uses `Authorization: Bearer <token>` directly (no `copilot_internal` token exchange). |
+| `tests/test_copilot_api.py` | ✅ | Standalone CLI script: authenticates via `gh auth token`, fetches live Copilot model list, prompts user to pick a model, sends a test prompt to `api.githubcopilot.com/chat/completions` and prints the response. Self-contained — no imports from `backend/` or `config/`. Uses `httpx` synchronously. Auth uses `Authorization: Bearer <token>` directly (no `copilot_internal` token exchange). `settings.json` search now checks `~/.jira_agent_app/` first (new persistent location), then legacy dev/build paths. |
 
 ### Build Pipeline
 | File | Status | Notes |
@@ -101,6 +102,7 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 | "Save & Close" required two clicks after saving a profile | Removed SnackBar from `_save_profile`; extracted logic into `_do_save_profile()` so `on_save_and_close` can call it without pushing a dialog onto the stack |
 | Unsaved profile edits silently lost on "Save & Close" | `on_save_and_close` calls `_do_save_profile()` first; keeps dialog open if validation fails |
 | Copilot token exchange returns HTTP 404 (`Bearer` prefix rejected) | `_get_copilot_token()` now sends `Authorization: token <oauth>` (GitHub requirement); per-status-code error messages guide user on 404 (no seat), 401/403 (bad token), and network errors; `GET /auth/copilot/status` endpoint available for diagnostics |
+| `settings.json` destroyed on app update (new build replaces `dist/JiraAgent/`) | `get_base_path()` now writes to `~/.jira_agent_app/` (OS user-home); `migrate_legacy_settings()` auto-copies any pre-existing `settings.json` from the old volatile location on first run |
 
 ### MCP Tools (live)
 | Tool | Server | Used by |
