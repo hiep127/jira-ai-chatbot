@@ -128,8 +128,7 @@ async def lifespan(app: FastAPI):
             }
         )
         try:
-            await mcp_client.__aenter__()
-            tools = mcp_client.get_tools()
+            tools = await mcp_client.get_tools()
             app.state.graph = build_graph(tools)
             app.state.models_cache = None
             app.state.mcp_ctx = mcp_client
@@ -143,9 +142,6 @@ async def lifespan(app: FastAPI):
                 exc,
             )
             raise
-        finally:
-            current_ctx = getattr(app.state, "mcp_ctx", mcp_client)
-            await current_ctx.__aexit__(None, None, None)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -177,8 +173,7 @@ async def reload_profiles(request: Request) -> ReloadResponse:
             }
         )
         try:
-            await new_client.__aenter__()
-            tools = new_client.get_tools()
+            tools = await new_client.get_tools()
             new_graph = build_graph(tools)
         except Exception as exc:
             logger.warning(
@@ -186,23 +181,13 @@ async def reload_profiles(request: Request) -> ReloadResponse:
                 "Remediation: restart the app.",
                 exc,
             )
-            try:
-                await new_client.__aexit__(None, None, None)
-            except Exception:
-                pass
             raise HTTPException(
                 status_code=500,
                 detail=f"Profile reload failed: {exc}. Remediation: restart the app.",
             )
 
-        old_ctx = request.app.state.mcp_ctx
         request.app.state.mcp_ctx = new_client
         request.app.state.graph = new_graph
-
-        try:
-            await old_ctx.__aexit__(None, None, None)
-        except Exception as exc:
-            logger.warning("[reload-profiles] Failed to shut down old MCP context: %s", exc)
 
         return ReloadResponse(status="ok", message="Profiles reloaded successfully.")
 

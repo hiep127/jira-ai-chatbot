@@ -85,3 +85,17 @@ pytest tests/path/to/test_file.py::test_function_name -v
 - **Flet ↔ FastAPI**: The Flet app communicates with FastAPI over `localhost` HTTP. Flet should not import backend modules directly.
 - **Flet API rules (MANDATORY)**: Before planning or writing any frontend (`frontend/`) code, read `docs/flet_implementation_rules.md` in full. The installed version is `flet==0.84.0`. Key differences from older Flet: dialogs use `page.show_dialog()` / `page.pop_dialog()` (NOT `page.open()` / `page.close()`); icons use `ft.Icons.*` (NOT `ft.icons.*`); colors use `ft.Colors.*` (NOT `ft.colors.*`); layout helpers like `ft.padding.all()` / `ft.border.only()` do not exist — use `ft.Padding()` / `ft.Border()` directly.
 - **Coding standards**: All code must comply with `CODING_STANDARDS.md`. Read it before writing any backend or frontend code.
+- **`langchain-mcp-adapters` API (MANDATORY)**: As of version 0.1.0, `MultiServerMCPClient` is **not** a context manager. Never call `__aenter__` / `__aexit__` on it — they raise `NotImplementedError`. Always use the stateless call pattern and always `await get_tools()`:
+  ```python
+  # CORRECT
+  client = MultiServerMCPClient({...})
+  tools = await client.get_tools()
+
+  # WRONG — raises NotImplementedError
+  async with MultiServerMCPClient({...}) as client:
+      tools = await client.get_tools()
+
+  # WRONG — missing await, returns a coroutine not a list
+  tools = client.get_tools()
+  ```
+  Each tool invocation opens its own short-lived subprocess session automatically; there is no persistent connection to manage or close.
