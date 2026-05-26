@@ -103,7 +103,7 @@ def main() -> None:
     dist = root / "dist" / "JiraAgent"
     tools_dir = dist / "tools"
 
-    print("[2/4] Copying .env template...")
+    print("[2/4] Copying .env template and MCP tool script...")
     env_src = root / "tools" / "jira_server.env"
     if env_src.exists():
         tools_dir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +111,14 @@ def main() -> None:
         print("  Copied tools/jira_server.env")
     else:
         print("  tools/jira_server.env not found — skipped.")
+
+    jira_tool_src = root / "tools" / "jira_tool.py"
+    if jira_tool_src.exists():
+        tools_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(jira_tool_src, tools_dir / "jira_tool.py")
+        print("  Copied tools/jira_tool.py")
+    else:
+        print("  tools/jira_tool.py not found — skipped.")
 
     print("[3/4] Bundling GitHub CLI (gh.exe)...")
     try:

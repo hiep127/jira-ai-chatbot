@@ -5,8 +5,10 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -118,21 +120,34 @@ class McpDebugResponse(BaseModel):
 _REQUIRED_MCP_TOOLS = {"get_tickets_by_batch", "fetch_ticket_metadata", "save_summary_to_linux"}
 
 
+def _resolve_mcp_executable() -> tuple[str, str] | tuple[None, None]:
+    """Return (python_exe, tool_script) for the current runtime.
+
+    In dev mode: use sys.executable and the relative path.
+    In frozen mode: find system Python on PATH and the script next to the .exe.
+    Returns (None, None) when frozen and no usable Python/script is found.
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable, "tools/jira_tool.py"
+
+    python_exe = shutil.which("python") or shutil.which("python3")
+    tool_script = str(Path(sys.executable).parent / "tools" / "jira_tool.py")
+    if python_exe and Path(tool_script).exists():
+        return python_exe, tool_script
+    return None, None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if getattr(sys, "frozen", False):
-        # Running as a PyInstaller bundle — sys.executable is the .exe, not Python,
-        # so the stdio MCP subprocess cannot be started. Boot without tools.
-        app.state.graph = build_graph([])
-        app.state.models_cache = None
-        app.state.loaded_tool_names = []
-        yield
-    else:
+    frozen = getattr(sys, "frozen", False)
+    python_exe, tool_script = _resolve_mcp_executable()
+
+    if python_exe and tool_script:
         mcp_client = MultiServerMCPClient(
             {
                 "jira": {
-                    "command": sys.executable,
-                    "args": ["tools/jira_tool.py"],
+                    "command": python_exe,
+                    "args": [tool_script],
                     "transport": "stdio",
                     "env": _build_mcp_env(),
                 }
@@ -145,16 +160,32 @@ async def lifespan(app: FastAPI):
             app.state.graph = build_graph(tools)
             app.state.models_cache = None
             app.state.mcp_ctx = mcp_client
+            app.state.mcp_python = python_exe
+            app.state.mcp_tool_script = tool_script
             app.state.reload_lock = asyncio.Lock()
             yield
+            return
         except Exception as exc:
-            logger.critical(
-                "[startup] Live jira-harness MCP server failed to connect: %s. "
-                "Ensure tools/jira_tool.py is present and its dependencies are installed. "
-                "Aborting startup.",
-                exc,
-            )
-            raise
+            if not frozen:
+                logger.critical(
+                    "[startup] MCP server failed to connect: %s. "
+                    "Ensure tools/jira_tool.py is present and its dependencies are installed. "
+                    "Aborting startup.",
+                    exc,
+                )
+                raise
+            logger.warning("[startup] MCP failed in frozen mode: %s. Falling back to no-tools graph.", exc)
+    else:
+        logger.warning(
+            "[startup] Frozen mode: Python not found on PATH or tools/jira_tool.py missing next to "
+            "the .exe. Falling back to no-tools graph."
+        )
+
+    # Fallback — frozen mode only (non-frozen always raises above)
+    app.state.loaded_tool_names = []
+    app.state.graph = build_graph([])
+    app.state.models_cache = None
+    yield
 
 
 app = FastAPI(lifespan=lifespan)
@@ -167,10 +198,10 @@ async def ping() -> PingResponse:
 
 @app.post("/reload-profiles", response_model=ReloadResponse)
 async def reload_profiles(request: Request) -> ReloadResponse:
-    if getattr(sys, "frozen", False):
+    if not hasattr(request.app.state, "reload_lock"):
         return ReloadResponse(
             status="skipped",
-            message="Reload not supported in bundled mode. Restart the app.",
+            message="MCP not active — no reload needed. Restart the app if you changed settings.",
         )
 
     async with request.app.state.reload_lock:
@@ -178,8 +209,8 @@ async def reload_profiles(request: Request) -> ReloadResponse:
         new_client = MultiServerMCPClient(
             {
                 "jira": {
-                    "command": sys.executable,
-                    "args": ["tools/jira_tool.py"],
+                    "command": request.app.state.mcp_python,
+                    "args": [request.app.state.mcp_tool_script],
                     "transport": "stdio",
                     "env": new_env,
                 }
@@ -201,6 +232,7 @@ async def reload_profiles(request: Request) -> ReloadResponse:
 
         request.app.state.mcp_ctx = new_client
         request.app.state.graph = new_graph
+        request.app.state.loaded_tool_names = [t.name for t in tools]
 
         return ReloadResponse(status="ok", message="Profiles reloaded successfully.")
 
