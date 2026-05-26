@@ -420,7 +420,49 @@ async def main(page: ft.Page) -> None:
             vertical_alignment=ft.CrossAxisAlignment.START,
         )
     )
+    async def _show_mcp_status() -> None:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get("http://localhost:8000/debug/mcp")
+            if r.status_code != 200:
+                return
+            data = r.json()
+            mode = data.get("graph_mode", "?")
+            loaded: list[str] = data.get("loaded_tools", [])
+            missing: list[str] = data.get("missing_tools", [])
+            frozen: bool = data.get("frozen", False)
+
+            if frozen:
+                status_text = "⚙️ MCP: bundled (.exe) mode — Jira tools disabled. Run in dev mode to use live tools."
+            elif mode == "full":
+                status_text = f"⚙️ MCP: OK — {len(loaded)} tools loaded, full graph active."
+            else:
+                tools_str = ", ".join(loaded) if loaded else "none"
+                missing_str = ", ".join(missing) if missing else "none"
+                status_text = (
+                    f"⚙️ MCP: FALLBACK mode\n"
+                    f"  loaded : {tools_str}\n"
+                    f"  missing: {missing_str}"
+                )
+
+            message_list.controls.append(
+                ft.Container(
+                    content=ft.Text(
+                        status_text,
+                        italic=True,
+                        size=11,
+                        color=ft.Colors.GREY_500,
+                        selectable=True,
+                    ),
+                    padding=ft.Padding(left=14, right=14, top=4, bottom=4),
+                )
+            )
+            page.update()
+        except Exception:
+            pass
+
     rebuild_sidebar()
+    page.run_task(_show_mcp_status)
 
 
 ft.app(target=main)

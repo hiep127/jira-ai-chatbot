@@ -5,12 +5,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Workflow: Plan Mode
 
 **Always operate in Plan Mode.** Before writing any code or modifying files:
-1. Deeply analyze the request and identify all affected components
-2. Outline the full architectural approach, data flow, and tool/schema definitions
-3. List every file that will be created or changed
-4. Wait for **explicit user approval** before implementing anything
+1. **Read `STATUS.md` first** — it is the authoritative record of what is built, what is pending, and known fixes. Use it to understand the current state of every file before touching anything.
+2. Deeply analyze the request and identify all affected components
+3. Outline the full architectural approach, data flow, and tool/schema definitions
+4. List every file that will be created or changed
+5. Wait for **explicit user approval** before implementing anything
 
 This is a hard constraint — it exists to protect the user's API budget and ensure alignment before any code is generated.
+
+**After implementation:** run `/status-updater` to update `STATUS.md`. This applies after **any** code change — bug fixes, refactors, new features, config changes — not only after a jira-planner session. Do not skip this step.
 
 ## Project Overview
 

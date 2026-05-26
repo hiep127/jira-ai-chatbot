@@ -108,6 +108,16 @@ class CopilotStatusResponse(BaseModel):
     error_detail: str | None = None
 
 
+class McpDebugResponse(BaseModel):
+    graph_mode: str
+    loaded_tools: list[str]
+    missing_tools: list[str]
+    frozen: bool
+
+
+_REQUIRED_MCP_TOOLS = {"get_tickets_by_batch", "fetch_ticket_metadata", "save_summary_to_linux"}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if getattr(sys, "frozen", False):
@@ -115,6 +125,7 @@ async def lifespan(app: FastAPI):
         # so the stdio MCP subprocess cannot be started. Boot without tools.
         app.state.graph = build_graph([])
         app.state.models_cache = None
+        app.state.loaded_tool_names = []
         yield
     else:
         mcp_client = MultiServerMCPClient(
@@ -129,6 +140,8 @@ async def lifespan(app: FastAPI):
         )
         try:
             tools = await mcp_client.get_tools()
+            app.state.loaded_tool_names = [t.name for t in tools]
+            logger.info("[startup] MCP tools loaded: %s", app.state.loaded_tool_names)
             app.state.graph = build_graph(tools)
             app.state.models_cache = None
             app.state.mcp_ctx = mcp_client
@@ -195,6 +208,20 @@ async def reload_profiles(request: Request) -> ReloadResponse:
 @app.get("/health")
 async def health() -> HealthResponse:
     return HealthResponse(status="healthy")
+
+
+@app.get("/debug/mcp", response_model=McpDebugResponse)
+async def debug_mcp(request: Request) -> McpDebugResponse:
+    frozen = getattr(sys, "frozen", False)
+    loaded = getattr(request.app.state, "loaded_tool_names", [])
+    missing = sorted(_REQUIRED_MCP_TOOLS - set(loaded))
+    graph_mode = "full" if not missing and not frozen else "fallback"
+    return McpDebugResponse(
+        graph_mode=graph_mode,
+        loaded_tools=loaded,
+        missing_tools=missing,
+        frozen=frozen,
+    )
 
 
 @app.get("/auth/github/status")
