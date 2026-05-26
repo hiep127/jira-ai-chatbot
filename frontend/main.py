@@ -432,10 +432,10 @@ async def main(page: ft.Page) -> None:
             missing: list[str] = data.get("missing_tools", [])
             frozen: bool = data.get("frozen", False)
 
-            if frozen:
-                status_text = "⚙️ MCP: bundled (.exe) mode — Jira tools disabled. Run in dev mode to use live tools."
-            elif mode == "full":
+            if mode == "full":
                 status_text = f"⚙️ MCP: OK — {len(loaded)} tools loaded, full graph active."
+            elif frozen and not loaded:
+                status_text = "⚙️ MCP: tools unavailable — no system Python found or jira_tool.py missing next to the .exe."
             else:
                 tools_str = ", ".join(loaded) if loaded else "none"
                 missing_str = ", ".join(missing) if missing else "none"

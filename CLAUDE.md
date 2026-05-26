@@ -15,6 +15,17 @@ This is a hard constraint — it exists to protect the user's API budget and ens
 
 **After implementation:** run `/status-updater` to update `STATUS.md`. This applies after **any** code change — bug fixes, refactors, new features, config changes — not only after a jira-planner session. Do not skip this step.
 
+## Deployment & Testing Environment
+
+**This app is built to run on a separate target computer, not the development machine.**
+
+The Jira integration requires VPN access that is only available on the target machine. This means:
+
+- **Do not suggest running the full app locally** as a way to verify Jira-related features — it will not work on the dev machine without VPN.
+- **Do not treat the inability to run the app locally as a bug.** It is expected behavior.
+- Code correctness is verified by reading the code, not by running it. Flag logic issues through analysis, not live execution.
+- The build output (`dist/JiraAgent/Jira AI.exe`) is what gets deployed to the target machine for real testing.
+
 ## Project Overview
 
 Autonomous AI agent desktop app for Windows. A Flet desktop UI connects to a local FastAPI backend. The agent loop makes direct HTTPS calls to `api.githubcopilot.com` using the OAuth token from the local GitHub CLI (`gh auth token`) — no third-party AI SDK is used. All external tool invocations are routed through the Model Context Protocol (MCP).

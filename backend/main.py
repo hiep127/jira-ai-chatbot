@@ -130,7 +130,7 @@ def _resolve_mcp_executable() -> tuple[str, str] | tuple[None, None]:
     if not getattr(sys, "frozen", False):
         return sys.executable, "tools/jira_tool.py"
 
-    python_exe = shutil.which("python") or shutil.which("python3")
+    python_exe = shutil.which("python") or shutil.which("python3") or shutil.which("py")
     tool_script = str(Path(sys.executable).parent / "tools" / "jira_tool.py")
     if python_exe and Path(tool_script).exists():
         return python_exe, tool_script
@@ -247,7 +247,7 @@ async def debug_mcp(request: Request) -> McpDebugResponse:
     frozen = getattr(sys, "frozen", False)
     loaded = getattr(request.app.state, "loaded_tool_names", [])
     missing = sorted(_REQUIRED_MCP_TOOLS - set(loaded))
-    graph_mode = "full" if not missing and not frozen else "fallback"
+    graph_mode = "full" if not missing else "fallback"
     return McpDebugResponse(
         graph_mode=graph_mode,
         loaded_tools=loaded,
