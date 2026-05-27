@@ -60,7 +60,7 @@ def build_ticket_table(
             bottom=ft.BorderSide(1, ft.Colors.BLUE_GREY_800),
             left=ft.BorderSide(1, ft.Colors.BLUE_GREY_800),
         ),
-        data_row_color={ft.MaterialState.SELECTED: ft.Colors.BLUE_GREY_800},
+        data_row_color={ft.ControlState.SELECTED: ft.Colors.BLUE_GREY_800},
         columns=[
             ft.DataColumn(ft.Text("KEY",          weight=ft.FontWeight.BOLD)),
             ft.DataColumn(ft.Text("INSTANCE",     weight=ft.FontWeight.BOLD)),

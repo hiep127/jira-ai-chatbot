@@ -19,7 +19,7 @@
     * `padding=20` for main view containers.
 * **Table UI:**
     * Borders: `ft.border.all(1, ft.colors.BLUE_GREY_800)`
-    * Zebra-striping: `data_row_color={ft.MaterialState.SELECTED: ft.colors.BLUE_GREY_800}`
+    * Zebra-striping: `data_row_color={ft.ControlState.SELECTED: ft.Colors.BLUE_GREY_800}`
 
 ## 4. Component Rules
 * **Tables:** Always wrap text in `ft.Container` to force column sizing. Summary column width: `400px`.

@@ -132,6 +132,7 @@ async def main(page: ft.Page) -> None:
         message_list.controls.append(thinking)
         page.update()
 
+        thinking_removed = False
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 r = await client.post(
@@ -151,6 +152,7 @@ async def main(page: ft.Page) -> None:
                 reply: str = data["response"]
                 tickets: list[dict] = data.get("tickets", [])
                 message_list.controls.remove(thinking)
+                thinking_removed = True
                 if tickets:
                     app_state["selected_tickets"] = []
                     message_list.controls.append(build_ticket_table(tickets, app_state, page))
@@ -159,6 +161,7 @@ async def main(page: ft.Page) -> None:
             else:
                 detail = r.json().get("detail", r.text)
                 message_list.controls.remove(thinking)
+                thinking_removed = True
 
                 if r.status_code == 401 and "GitHub CLI" in detail:
                     page.show_dialog(
@@ -181,7 +184,8 @@ async def main(page: ft.Page) -> None:
                     print(f"[on_send] HTTP {r.status_code}: {detail}")
                     show_error_dialog(page, f"Error {r.status_code}: {detail}\n\nRemediation: {hint}")
         except Exception as exc:
-            message_list.controls.remove(thinking)
+            if not thinking_removed:
+                message_list.controls.remove(thinking)
             print(f"[on_send] Exception: {exc}")
             show_error_dialog(
                 page,
