@@ -5,15 +5,26 @@ from typing import Any
 import flet as ft
 
 
-def _make_row(t: dict, app_state: dict[str, Any]) -> ft.DataRow:
+def _make_row(t: dict, app_state: dict[str, Any], page: ft.Page) -> ft.DataRow:
     row = ft.DataRow(
         selected=False,
         cells=[
-            ft.DataCell(ft.Text(t["key"], selectable=True)),
+            ft.DataCell(
+                ft.TextButton(
+                    text=t["key"],
+                    style=ft.ButtonStyle(padding=ft.Padding(left=0, right=0, top=0, bottom=0)),
+                    on_click=lambda e, u=t.get("url", ""): page.launch_url(u) if u else None,
+                )
+            ),
             ft.DataCell(ft.Text(t["instance"])),
             ft.DataCell(ft.Text(t["status"])),
-            ft.DataCell(ft.Text(t["summary"], max_lines=3, overflow=ft.TextOverflow.ELLIPSIS)),
-            ft.DataCell(ft.Text(t["blocker"])),
+            ft.DataCell(
+                ft.Container(
+                    content=ft.Text(t["summary"], max_lines=3, overflow=ft.TextOverflow.ELLIPSIS),
+                    width=400,
+                )
+            ),
+            ft.DataCell(ft.Container(content=ft.Text(t["blocker"]), width=150)),
             ft.DataCell(ft.Text(t["updated"])),
             ft.DataCell(ft.Text(t["aging"])),
         ],
@@ -39,10 +50,17 @@ def build_ticket_table(
     app_state: dict[str, Any],
     page: ft.Page,
 ) -> ft.Container:
-    rows = [_make_row(t, app_state) for t in tickets]
+    rows = [_make_row(t, app_state, page) for t in tickets]
 
     table = ft.DataTable(
         show_checkbox_column=True,
+        border=ft.Border(
+            top=ft.BorderSide(1, ft.Colors.BLUE_GREY_800),
+            right=ft.BorderSide(1, ft.Colors.BLUE_GREY_800),
+            bottom=ft.BorderSide(1, ft.Colors.BLUE_GREY_800),
+            left=ft.BorderSide(1, ft.Colors.BLUE_GREY_800),
+        ),
+        data_row_color={ft.MaterialState.SELECTED: ft.Colors.BLUE_GREY_800},
         columns=[
             ft.DataColumn(ft.Text("KEY",          weight=ft.FontWeight.BOLD)),
             ft.DataColumn(ft.Text("INSTANCE",     weight=ft.FontWeight.BOLD)),

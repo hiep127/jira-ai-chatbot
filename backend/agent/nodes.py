@@ -239,6 +239,11 @@ def make_aggregate_and_report_node(save_tool: Any) -> Callable[[dict], dict]:
                 "blocker":  blocker,
                 "updated":  updated[:10] if updated else "—",
                 "aging":    _aging(updated),
+                "url": (
+                    f"{lge_base}{key}" if key.split("-")[0] in _LGE_PREFIXES and lge_base
+                    else f"{spaws_base}{key}" if spaws_base
+                    else ""
+                ),
             }
             for key, instance, status, summary, blocker, updated in rows
         ]
