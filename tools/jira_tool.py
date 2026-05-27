@@ -147,6 +147,7 @@ def fetch_ticket_metadata(args: TicketMetadataArgs) -> str:
             "status": issue.fields.status.name,
             "summary": issue.fields.summary,
             "assignee": getattr(issue.fields.assignee, "displayName", "Unassigned"),
+            "updated": getattr(issue.fields, "updated", ""),
             "description": issue.fields.description or "No description.",
             "comments": [{"author": c.author.displayName, "body": c.body, "date": c.created} for c in recent]
         }

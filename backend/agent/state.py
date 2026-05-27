@@ -16,6 +16,7 @@ class AgentState(MessagesState):
     tickets: list[dict]
     summaries: Annotated[list[str], operator.add]
     ticket_summaries: Annotated[list[str], operator.add]
+    ticket_table_data: list[dict]
     parent_link: str
     custom_jql: str
     model_id: str

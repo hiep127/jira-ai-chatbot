@@ -15,6 +15,7 @@ from config.settings import (
 from frontend.views.jira_settings import open_jira_settings_dialog
 from frontend.views.dialogs import show_error_dialog
 from frontend.components.model_picker import open_model_picker
+from frontend.components.ticket_table import build_ticket_table
 # Imported directly so the compiled binary can run the backend in-process.
 # subprocess.Popen(sys.executable) would fork-bomb the packaged .exe.
 from backend.main import app as _backend_app
@@ -62,6 +63,7 @@ async def main(page: ft.Page) -> None:
         "model_id":            "",
         "model_name":          "",
         "model_tier":          "",
+        "selected_tickets":    [],
     }
 
     sidebar_col = ft.Column(
@@ -145,9 +147,15 @@ async def main(page: ft.Page) -> None:
                     },
                 )
             if r.status_code == 200:
-                reply = r.json()["response"]
+                data = r.json()
+                reply: str = data["response"]
+                tickets: list[dict] = data.get("tickets", [])
                 message_list.controls.remove(thinking)
-                message_list.controls.append(_make_bubble(reply, "assistant"))
+                if tickets:
+                    app_state["selected_tickets"] = []
+                    message_list.controls.append(build_ticket_table(tickets, app_state, page))
+                else:
+                    message_list.controls.append(_make_bubble(reply, "assistant"))
             else:
                 detail = r.json().get("detail", r.text)
                 message_list.controls.remove(thinking)

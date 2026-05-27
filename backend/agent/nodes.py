@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import date, datetime
 from typing import Any, Callable
 
 from langchain_core.messages import AIMessage
@@ -35,41 +36,18 @@ def _extract_text(result: Any) -> str:
 # System prompts
 # ---------------------------------------------------------------------------
 
-_SUMMARIZER_PROMPT = """\
-You are the Daily Summarizer sub-agent. Your job is to deeply understand a Jira \
-ticket and produce a concise, insightful summary — not just extract raw text.
-
-Steps:
-1. Call fetch_ticket_metadata for the given ticket (comment_limit=15).
-2. Read the ticket description, status, and all comments carefully.
-3. Using your reasoning, synthesize:
-   - A 1-sentence Pulse: what is the team actually working on or discussing RIGHT NOW?
-     Capture the technical essence, not just a restatement of the title.
-     If there are no comments write exactly: No recent activity.
-   - A Blocker: any explicit impediment mentioned (one word/phrase), or — if none.
-4. Reply with ONE line in this exact pipe-delimited format (no markdown):
-   TICKET_KEY | INSTANCE | STATUS | PULSE | BLOCKER
-
-Good Pulse examples:
-  "Team is investigating a NullPointerException in AudioService.init() on build 4.2.1."
-  "Waiting for hardware team to confirm audio focus regression reproduces on latest firmware."
-Bad Pulse (do not do this):
-  "Reproduced on build 4.2.1. Looks like a null-pointer in AudioService.init()." — this
-  is just a raw copy of a comment, not a synthesis.
-
-Do NOT copy-paste comment text verbatim. Reason about what is happening and summarise it.\
-"""
-
 _SUMMARIZER_DAILY_PROMPT = """\
 You are the Summarizer Agent (Audio Framework Specialist).
 You receive ONE ticket key and its full metadata JSON. Your steps:
-1. From the JSON extract: KEY, STATUS, ASSIGNEE, SUMMARY, latest 5 comments.
+1. From the JSON extract: KEY, STATUS, ASSIGNEE, SUMMARY, description, and comments.
 2. Determine INSTANCE: "LGE" if prefix in {DVDNAIVI, AUDIODV, REAVN, DNSD}, else "SPAWS".
-3. Synthesise a 1-sentence PULSE: what is the team actually doing RIGHT NOW?
-   Reason from the comments — do NOT copy-paste verbatim. If no comments: "No recent activity."
+3. Write a concise SUMMARY of the ticket: what the issue is and its current state based on the
+   description and comments. Include enough detail to understand the problem and any progress
+   without reading the full ticket. Reason from the content — do NOT copy-paste text verbatim.
+   If there is no description and no comments: "No information available."
 4. Identify BLOCKER: one word/phrase for any explicit impediment, or "—" if none.
 5. Output EXACTLY ONE pipe-delimited line — no prose, no markdown, no extra lines:
-   TICKET_KEY | INSTANCE | STATUS | PULSE | BLOCKER\
+   TICKET_KEY | INSTANCE | STATUS | SUMMARY | BLOCKER\
 """
 
 
@@ -178,6 +156,7 @@ def make_ticket_summarizer_node(fetch_tool: Any) -> Callable[[TicketState], dict
             if parsed.get("status") != "SUCCESS":
                 raise Exception(f"Jira tool returned non-SUCCESS status: {parsed.get('status')}")
             data = parsed["data"]
+            updated = data.get("updated", "")
             slim = {
                 "title":       data.get("summary", "N/A"),
                 "description": (data.get("description") or "No description.")[:2000],
@@ -188,12 +167,12 @@ def make_ticket_summarizer_node(fetch_tool: Any) -> Callable[[TicketState], dict
                 model_id=state.get("model_id", ""),
                 system_prompt=_SUMMARIZER_DAILY_PROMPT,
             )
-            return {"ticket_summaries": [summary]}
+            return {"ticket_summaries": [f"{summary.strip()} | {updated}"]}
 
         except Exception as e:
             fallback = (
                 f"{ticket_id} | ERROR | ERROR | "
-                f"Summarizer failed — {e}. Check provider credentials in Settings. | —"
+                f"Summarizer failed — {e}. Check provider credentials in Settings. | — | "
             )
             return {"ticket_summaries": [fallback]}
 
@@ -212,30 +191,57 @@ def make_aggregate_and_report_node(save_tool: Any) -> Callable[[dict], dict]:
                 "Add them to tools/jira_server.env to generate clickable ticket links."
             )
 
-        rows: list[tuple[str, str, str, str, str]] = []
+        def _aging(updated_str: str) -> str:
+            try:
+                d = datetime.strptime(updated_str[:10], "%Y-%m-%d").date()
+                return f"{(date.today() - d).days}d"
+            except Exception:
+                return "—"
+
+        rows: list[tuple[str, str, str, str, str, str]] = []
         for line in state.get("ticket_summaries", []):
             parts = [p.strip() for p in line.split("|")]
-            if len(parts) < 5:
+            if len(parts) < 6:
                 continue
-            key, instance, status, pulse, blocker = parts[0], parts[1], parts[2], parts[3], parts[4]
+            key, instance, status, summary, blocker, updated = (
+                parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+            )
             if key.startswith("CCC-") or status in _CLOSED_STATUSES:
                 continue
-            rows.append((key, instance, status, pulse, blocker))
+            rows.append((key, instance, status, summary, blocker, updated))
+
+        rows.sort(key=lambda r: r[5], reverse=True)
 
         if rows:
             header = (
-                "| Ticket (Link) | Instance | Status | Pulse | Blocker |\n"
-                "| :--- | :--- | :--- | :--- | :--- |\n"
+                "| Ticket (Link) | Instance | Status | Summary | Blocker | Last Updated | Aging |\n"
+                "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
             )
             body_lines: list[str] = []
-            for key, instance, status, pulse, blocker in rows:
+            for key, instance, status, summary, blocker, updated in rows:
                 prefix = key.split("-")[0]
                 base = lge_base if prefix in _LGE_PREFIXES else spaws_base
                 url = f"{base}{key}" if base else key
-                body_lines.append(f"| [{key}]({url}) | {instance} | {status} | {pulse} | {blocker} |")
+                updated_display = updated[:10] if updated else "—"
+                body_lines.append(
+                    f"| [{key}]({url}) | {instance} | {status} | {summary} | {blocker} | {updated_display} | {_aging(updated)} |"
+                )
             table = header + "\n".join(body_lines)
         else:
             table = "No active tickets after filtering."
+
+        ticket_table_data: list[dict] = [
+            {
+                "key":      key,
+                "instance": instance,
+                "status":   status,
+                "summary":  summary,
+                "blocker":  blocker,
+                "updated":  updated[:10] if updated else "—",
+                "aging":    _aging(updated),
+            }
+            for key, instance, status, summary, blocker, updated in rows
+        ]
 
         try:
             await save_tool.ainvoke(
@@ -247,6 +253,6 @@ def make_aggregate_and_report_node(save_tool: Any) -> Callable[[dict], dict]:
                 "Check Linux workspace path and permissions.", e
             )
 
-        return {"messages": [AIMessage(content=table)]}
+        return {"messages": [AIMessage(content=table)], "ticket_table_data": ticket_table_data}
 
     return node

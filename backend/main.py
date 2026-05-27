@@ -78,6 +78,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     thread_id: str
+    tickets: list[dict] = []
 
 
 class ReloadResponse(BaseModel):
@@ -378,7 +379,8 @@ async def chat(body: ChatRequest, request: Request) -> ChatResponse:
             config={"configurable": {"thread_id": body.thread_id}},
         )
         response_text = result["messages"][-1].content
-        return ChatResponse(response=response_text, thread_id=body.thread_id)
+        ticket_table_data: list[dict] = result.get("ticket_table_data", [])
+        return ChatResponse(response=response_text, thread_id=body.thread_id, tickets=ticket_table_data)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
