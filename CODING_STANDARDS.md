@@ -58,3 +58,49 @@ data = json.loads(raw)
 ```
 
 Each tool invocation opens its own short-lived subprocess session automatically; there is no persistent connection to manage or close.
+
+## 7. LangGraph API (version 1.1.10)
+
+The pinned version is **LangGraph 1.1.10**. The API changed significantly between 0.x and 1.x.
+
+### 7a. Node return values
+A node function must return either a `dict` (state patch) or a `Command` object. **Never return a bare `list`** — LangGraph 1.x raises `INVALID_GRAPH_NODE_RETURN_VALUE` at runtime.
+
+```python
+# CORRECT — state patch
+async def my_node(state: AgentState) -> dict:
+    return {"messages": [...]}
+
+# CORRECT — dynamic routing via Command
+from langgraph.types import Command, Send
+async def my_node(state: AgentState) -> Command:
+    return Command(update={"messages": [...]}, goto="next_node")
+
+# WRONG — bare list; raises INVALID_GRAPH_NODE_RETURN_VALUE in LangGraph 1.x
+async def my_node(state: AgentState) -> list:
+    return [Send("next_node", {...})]
+```
+
+### 7b. Fan-out (Send / map-reduce)
+To fan out to multiple parallel node instances, return `Command(goto=[Send(...), ...])` from the node. This replaces the old pattern of returning `[Send(...)]` directly.
+
+```python
+# CORRECT
+from langgraph.types import Command, Send
+async def dispatch_node(state: AgentState) -> Command:
+    return Command(goto=[Send("worker_node", {"item": x}) for x in items])
+
+# WRONG — worked in LangGraph 0.x, raises error in 1.x
+async def dispatch_node(state: AgentState) -> list:
+    return [Send("worker_node", {"item": x}) for x in items]
+```
+
+### 7c. Routing error paths via Command
+When a node has multiple exit paths (success fan-out vs. error fallback), use `Command` for both so routing is self-contained in the node:
+
+```python
+async def dispatch_node(state: AgentState) -> Command:
+    if error:
+        return Command(update={"messages": [AIMessage(content="...")]}, goto="fallback_node")
+    return Command(goto=[Send("worker_node", {"item": x}) for x in items])
+```

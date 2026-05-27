@@ -56,17 +56,6 @@ def build_graph(tools: list[Any]) -> Any:
 
     graph.add_edge(START, "discovery_and_dispatch")
 
-    # discovery_and_dispatch returns either:
-    #   (a) list[Send] → LangGraph fans out; routing fn is NOT called
-    #   (b) plain dict (error/empty) → routing fn is called; go to aggregate
-    def route_after_dispatch(state: AgentState) -> str:
-        return "aggregate_summary_node"
-
-    graph.add_conditional_edges(
-        "discovery_and_dispatch",
-        route_after_dispatch,
-        ["ticket_summarizer_node", "aggregate_summary_node"],
-    )
     graph.add_edge("ticket_summarizer_node", "aggregate_summary_node")
     graph.add_edge("aggregate_summary_node", END)
 

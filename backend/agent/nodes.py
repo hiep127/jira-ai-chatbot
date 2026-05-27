@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from langchain_core.messages import AIMessage
 from langgraph.graph import END
-from langgraph.types import Send
+from langgraph.types import Command, Send
 
 from backend.agent.llm_factory import call_copilot
 from backend.agent.state import TicketState
@@ -111,9 +111,9 @@ _LGE_PREFIXES = {"DVDNAIVI", "AUDIODV", "REAVN", "DNSD"}
 _CLOSED_STATUSES = {"Closed", "Integrated", "Merged_VLM", "Done"}
 
 
-def make_discovery_and_dispatch_node(batch_tool: Any) -> Callable[[dict], Any]:
+def make_discovery_and_dispatch_node(batch_tool: Any) -> Callable[[dict], Command]:
     """Python-only node: fetch ticket keys via batch tool, filter, fan-out via Send."""
-    async def node(state: dict) -> Any:
+    async def node(state: dict) -> Command:
         prefixes = state.get("prefixes", ["SPAWS", "LGE"])
         mode = state.get("mode", "TEAM")
         custom_jql = state.get("custom_jql", "")
@@ -124,12 +124,13 @@ def make_discovery_and_dispatch_node(batch_tool: Any) -> Callable[[dict], Any]:
             )
             raw = _extract_text(result)
         except Exception as e:
-            return {
-                "messages": [AIMessage(content=(
+            return Command(
+                update={"messages": [AIMessage(content=(
                     f"ERROR: Batch fetch failed — {e}. "
                     "Verify JIRA credentials in jira_server.env."
-                ))]
-            }
+                ))]},
+                goto="aggregate_summary_node",
+            )
 
         try:
             data = json.loads(raw) if isinstance(raw, str) else raw
@@ -138,12 +139,13 @@ def make_discovery_and_dispatch_node(batch_tool: Any) -> Callable[[dict], Any]:
                 if isinstance(prefix_tickets, list):
                     tickets.extend(prefix_tickets)
         except (json.JSONDecodeError, AttributeError) as e:
-            return {
-                "messages": [AIMessage(content=(
+            return Command(
+                update={"messages": [AIMessage(content=(
                     f"ERROR: Failed to parse batch response — {e}. "
                     "Check get_tickets_by_batch tool output format."
-                ))]
-            }
+                ))]},
+                goto="aggregate_summary_node",
+            )
 
         valid_keys = [
             t["key"] for t in tickets
@@ -152,11 +154,12 @@ def make_discovery_and_dispatch_node(batch_tool: Any) -> Callable[[dict], Any]:
         ]
 
         if not valid_keys:
-            return {
-                "messages": [AIMessage(content="No actionable tickets found after filtering.")]
-            }
+            return Command(
+                update={"messages": [AIMessage(content="No actionable tickets found after filtering.")]},
+                goto="aggregate_summary_node",
+            )
 
-        return [Send("ticket_summarizer_node", {"ticket_id": k}) for k in valid_keys]
+        return Command(goto=[Send("ticket_summarizer_node", {"ticket_id": k}) for k in valid_keys])
 
     return node
 
