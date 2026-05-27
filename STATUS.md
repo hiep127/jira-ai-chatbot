@@ -15,7 +15,7 @@ Autonomous AI agent Windows desktop app. A user pastes a Jira parent link and th
 | Tool routing | MCP via `langchain-mcp-adapters` |
 | Jira integration | Jira REST API (MCP tools: `get_tickets_by_batch`, `fetch_ticket_metadata`, `save_summary_to_linux`) |
 | Credential storage | `keyring` (Windows Credential Manager) |
-| Distribution | PyInstaller `.exe` via `build_release.py` (downloads `gh.exe` automatically) |
+| Distribution | PyInstaller `.exe` via `scripts/build_release.py` (downloads `gh.exe` automatically) |
 
 ## Architecture
 
@@ -85,8 +85,8 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 ### Build Pipeline
 | File | Status | Notes |
 |---|---|---|
-| `build_release.py` | ✅ | Preferred build script: runs PyInstaller, copies `jira_server.env`, downloads `gh.exe` to `tools/gh.exe` then copies into `dist/JiraAgent/tools/`, copies `wiki/`; Flet version pre-flight check |
-| `build.bat` | ✅ | Legacy helper: kills running `Jira AI.exe`, locates `flet.exe`, runs PyInstaller only (no gh.exe download) |
+| `scripts/build_release.py` | ✅ | Preferred build script: runs PyInstaller, copies `jira_server.env`, downloads `gh.exe` to `tools/gh.exe` then copies into `dist/JiraAgent/tools/`, copies `wiki/`; Flet version pre-flight check |
+| `scripts/build.bat` | ✅ | Legacy helper: kills running `Jira AI.exe`, locates `flet.exe`, runs PyInstaller only (no gh.exe download) |
 | `Jira AI.spec` | ✅ | `collect_all()` for LangGraph/LangChain core/MCP adapters + `copilot` (official SDK); removed `langchain_openai` and `langchain_anthropic`; `console=False`; hidden imports for uvicorn and keyring; output folder `dist/JiraAgent/` |
 | `dist/JiraAgent/Jira AI.exe` | ✅ | Last known-good build; `gh.exe` bundled at `dist/JiraAgent/tools/gh.exe` |
 
@@ -99,7 +99,7 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 | `flet.controls.alignment` attribute error | Removed `alignment=` from `_make_bubble`; margin handles positioning |
 | `ft.icons.DELETE` AttributeError | Changed to `ft.Icons.DELETE` (Flet 0.84: capitalized enum class, not lowercase module) |
 | Dialogs not opening / double-open crash | Migrated from `page.overlay.append` + `dialog.open=True` to `page.show_dialog()` / `page.pop_dialog()` (Flet 0.84 dialog stack API) |
-| `'"gh"' is not recognized` in auth terminal | `_gh_exe()` now checks project-root `tools/gh.exe` in dev mode; `build_release.py` downloads there first |
+| `'"gh"' is not recognized` in auth terminal | `_gh_exe()` now checks project-root `tools/gh.exe` in dev mode; `scripts/build_release.py` downloads there first |
 | "No JQL configured" false positive on Generate Summary | `on_daily_summary` now reads JQL from active profiles' `custom_jql` fields, not only `app_state["custom_jql"]` |
 | "Save & Close" required two clicks after saving a profile | Removed SnackBar from `_save_profile`; extracted logic into `_do_save_profile()` so `on_save_and_close` can call it without pushing a dialog onto the stack |
 | Unsaved profile edits silently lost on "Save & Close" | `on_save_and_close` calls `_do_save_profile()` first; keeps dialog open if validation fails |
@@ -121,7 +121,7 @@ Fallback: if the live `jira-harness` MCP server is unreachable, the backend fail
 | # | Task | Notes |
 |---|---|---|
 | 1 | End-to-end test | Run backend, trigger backlog-summary agent against live `jira-harness`, verify DataTable renders in UI and `selected_tickets` updates correctly |
-| 2 | Rebuild `.exe` | Run `python build_release.py` once live MCP integration is confirmed working |
+| 2 | Rebuild `.exe` | Run `python scripts/build_release.py` once live MCP integration is confirmed working |
 | 3 | "Process Selected" action | Currently shows a SnackBar with selected keys; wire up actual backend action (e.g. bulk status change, export) for the selected ticket list |
 
 ## How to Run (Development)

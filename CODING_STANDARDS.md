@@ -1,5 +1,7 @@
 # Python, FastAPI, and Flet Execution Standards
 
+**Scope:** These standards apply exclusively to the application source code — `backend/`, `frontend/`, `config/`, and `tools/`. Dev tooling in `scripts/` and root-level utilities (e.g. `run_harness.py`) are out of scope.
+
 All Python code written for this application MUST adhere to the following rules. The QA Reviewer will fail any code that violates these standards.
 
 ## 1. Type Hinting

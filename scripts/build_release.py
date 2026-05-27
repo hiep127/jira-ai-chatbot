@@ -9,7 +9,7 @@ Steps:
   5. Report success.
 
 Usage:
-    python build_release.py
+    python scripts/build_release.py
 
 Note: verify the Flet version matches requirements.txt before building.
 Run `python -c "import flet; print(flet.__version__)"` to confirm.
@@ -87,7 +87,7 @@ def _bundle_gh(root: Path, dist_tools_dir: Path) -> None:
 
 
 def main() -> None:
-    root = Path(__file__).parent
+    root = Path(__file__).parent.parent
 
     _check_prerequisites(root)
 

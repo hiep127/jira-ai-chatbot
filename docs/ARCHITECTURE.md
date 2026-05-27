@@ -33,12 +33,24 @@ All proposed feature plans MUST strictly adhere to these 5 core rules. If a plan
 
 ```
 AI Chatbot/
-├── ARCHITECTURE.md          ← Engineering laws + project structure (this file)
 ├── CLAUDE.md                ← Claude Code guidance and workflow rules
-├── feature_plan.md          ← Current implementation plan (regenerated each session)
-├── req.md                   ← Incoming feature requirements
+├── CODING_STANDARDS.md      ← App code standards (backend + frontend only)
+├── DESIGN.md                ← UI/UX design system
+├── STATUS.md                ← Authoritative record of what is built and pending
 ├── requirements.txt         ← Python dependency manifest
-├── run_harness.py           ← Dev harness for end-to-end test runs
+├── run_harness.py           ← Dev harness for end-to-end test runs (gitignored)
+│
+├── docs/
+│   ├── ARCHITECTURE.md      ← Engineering laws + project structure (this file)
+│   ├── feature_plan.md      ← Current implementation plan (regenerated each session, gitignored)
+│   ├── req.md               ← Incoming feature requirements (gitignored)
+│   ├── flet_implementation_rules.md  ← Flet 0.84 API reference
+│   └── superpowers/
+│
+├── scripts/
+│   ├── build_release.py     ← Preferred build script (PyInstaller + gh.exe download)
+│   ├── build.bat            ← Legacy build helper
+│   └── build_installer.iss  ← Inno Setup installer script
 │
 ├── frontend/
 │   ├── main.py              ← Flet app entry point; starts backend in-process, owns all UI state
