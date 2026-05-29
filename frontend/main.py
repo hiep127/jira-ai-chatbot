@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 import uuid
 from typing import Any
@@ -64,6 +65,7 @@ async def main(page: ft.Page) -> None:
         "model_name":          "",
         "model_tier":          "",
         "selected_tickets":    [],
+        "models_cache":        None,
     }
 
     sidebar_col = ft.Column(
@@ -128,15 +130,23 @@ async def main(page: ft.Page) -> None:
         send_btn.disabled = True
         summary_btn.disabled = True
         message_list.controls.append(_make_bubble(prompt_text, "user"))
-        thinking = ft.Text("Thinking...", italic=True, color=ft.Colors.GREY_400)
-        message_list.controls.append(thinking)
+
+        progress_col = ft.Column(spacing=4)
+        progress_container = ft.Container(
+            content=progress_col,
+            bgcolor=ft.Colors.BLUE_GREY_900,
+            border_radius=8,
+            padding=ft.Padding(left=8, right=8, top=8, bottom=8),
+            margin=ft.Margin(left=0, right=80, top=0, bottom=0),
+        )
+        message_list.controls.append(progress_container)
         page.update()
 
-        thinking_removed = False
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                r = await client.post(
-                    "http://localhost:8000/chat",
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    "http://localhost:8000/chat/stream",
                     json={
                         "prompt":      prompt_text,
                         "thread_id":   thread_id,
@@ -146,46 +156,46 @@ async def main(page: ft.Page) -> None:
                         "custom_jql":  app_state.get("custom_jql", ""),
                         "model_id":    app_state.get("model_id", ""),
                     },
-                )
-            if r.status_code == 200:
-                data = r.json()
-                reply: str = data["response"]
-                tickets: list[dict] = data.get("tickets", [])
-                message_list.controls.remove(thinking)
-                thinking_removed = True
-                if tickets:
-                    app_state["selected_tickets"] = []
-                    message_list.controls.append(build_ticket_table(tickets, app_state, page))
-                else:
-                    message_list.controls.append(_make_bubble(reply, "assistant"))
-            else:
-                detail = r.json().get("detail", r.text)
-                message_list.controls.remove(thinking)
-                thinking_removed = True
+                ) as r:
+                    if r.status_code != 200:
+                        await r.aread()
+                        try:
+                            detail = r.json().get("detail", r.text)
+                        except Exception:
+                            detail = r.text
+                        show_error_dialog(page, f"Error {r.status_code}: {detail}")
+                    else:
+                        async for line in r.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            try:
+                                event = json.loads(line[6:])
+                            except json.JSONDecodeError:
+                                continue
 
-                if r.status_code == 401 and "GitHub CLI" in detail:
-                    page.show_dialog(
-                        ft.SnackBar(
-                            ft.Text(
-                                "GitHub Copilot is not authenticated. "
-                                "Re-authenticate in Settings → Model Settings."
-                            ),
-                            bgcolor=ft.Colors.ORANGE_700,
-                        )
-                    )
-                else:
-                    _status_hints: dict[int, str] = {
-                        401: "Token expired or invalid — update your PAT in Settings → Jira Personal Access Token.",
-                        403: "Access denied — verify your Jira role has permission to read these issues.",
-                        404: "Endpoint not found — ensure the backend is the latest version.",
-                        500: "Backend internal error — check the terminal log for a Python traceback.",
-                    }
-                    hint = _status_hints.get(r.status_code, "Check the terminal log for details.")
-                    print(f"[on_send] HTTP {r.status_code}: {detail}")
-                    show_error_dialog(page, f"Error {r.status_code}: {detail}\n\nRemediation: {hint}")
+                            if event.get("type") == "progress":
+                                progress_col.controls.append(
+                                    ft.Row(
+                                        controls=[
+                                            ft.Icon(ft.Icons.CHEVRON_RIGHT, size=14, color=ft.Colors.GREY_600),
+                                            ft.Text(event["message"], italic=True, color=ft.Colors.GREY_500, size=12),
+                                        ],
+                                        spacing=4,
+                                    )
+                                )
+                                page.update()
+                            elif event.get("type") == "result":
+                                tickets: list[dict] = event.get("tickets", [])
+                                if tickets:
+                                    app_state["selected_tickets"] = []
+                                    message_list.controls.append(build_ticket_table(tickets, app_state, page))
+                                else:
+                                    message_list.controls.append(_make_bubble(event.get("response", ""), "assistant"))
+                                page.update()
+                            elif event.get("type") == "error":
+                                show_error_dialog(page, event.get("message", "Unknown error"))
         except Exception as exc:
-            if not thinking_removed:
-                message_list.controls.remove(thinking)
+            message_list.controls.remove(progress_container)
             print(f"[on_send] Exception: {exc}")
             show_error_dialog(
                 page,
@@ -193,12 +203,12 @@ async def main(page: ft.Page) -> None:
                 "Remediation: start the backend with:\n"
                 "  uvicorn backend.main:app --reload --port 8000",
             )
-
-        input_field.disabled = False
-        send_btn.disabled = False
-        summary_btn.disabled = False
-        input_field.focus()
-        page.update()
+        finally:
+            input_field.disabled = False
+            send_btn.disabled = False
+            summary_btn.disabled = False
+            input_field.focus()
+            page.update()
 
     async def on_send(e: ft.ControlEvent | None = None) -> None:
         text = input_field.value.strip()
@@ -307,7 +317,7 @@ async def main(page: ft.Page) -> None:
     model_chip_label = ft.Text("Select model", size=13)
     model_chip = ft.TextButton(
         content=model_chip_label,
-        on_click=lambda e: open_model_picker(page, app_state, _on_model_selected),
+        on_click=lambda e: open_model_picker(page, app_state, _on_model_selected, cached_models=app_state.get("models_cache")),
     )
 
     def _on_model_selected() -> None:
@@ -348,10 +358,12 @@ async def main(page: ft.Page) -> None:
     else:
         app_state["active_profiles"] = {p["name"] for p in _profiles}
 
-    async def _prefetch_models() -> None:
+    async def _preload_models() -> None:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                await client.get("http://localhost:8000/models")
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get("http://localhost:8000/models")
+            if r.status_code == 200:
+                app_state["models_cache"] = r.json()
         except Exception:
             pass
 
@@ -372,7 +384,7 @@ async def main(page: ft.Page) -> None:
         page.update()
 
         if authenticated:
-            page.run_task(_prefetch_models)
+            page.run_task(_preload_models)
 
     def _on_settings_saved() -> None:
         fresh = get_profiles()

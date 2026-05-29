@@ -9,9 +9,12 @@ _HEADER_TEXT = {"color": ft.Colors.WHITE, "weight": ft.FontWeight.BOLD}
 
 
 def _make_row(t: dict, app_state: dict[str, Any], page: ft.Page) -> ft.DataRow:
+    checkbox = ft.Checkbox(value=False)
+
     row = ft.DataRow(
         selected=False,
         cells=[
+            ft.DataCell(checkbox),
             ft.DataCell(
                 ft.TextButton(
                     t["key"],
@@ -33,18 +36,17 @@ def _make_row(t: dict, app_state: dict[str, Any], page: ft.Page) -> ft.DataRow:
         ],
     )
 
-    def on_select_changed(e: ft.ControlEvent) -> None:
-        row.selected = not row.selected
-        row.update()
+    def _on_check(e: ft.ControlEvent) -> None:
         key = t["key"]
-        if row.selected:
+        if checkbox.value:
             app_state["selected_tickets"].append(key)
+            row.selected = True
         else:
-            app_state["selected_tickets"] = [
-                k for k in app_state["selected_tickets"] if k != key
-            ]
+            app_state["selected_tickets"] = [k for k in app_state["selected_tickets"] if k != key]
+            row.selected = False
+        row.update()
 
-    row.on_select_changed = on_select_changed
+    checkbox.on_change = _on_check
     return row
 
 
@@ -56,7 +58,6 @@ def build_ticket_table(
     rows = [_make_row(t, app_state, page) for t in tickets]
 
     table = ft.DataTable(
-        show_checkbox_column=True,
         border=ft.Border(
             top=ft.BorderSide(1, ft.Colors.BLUE_GREY_800),
             right=ft.BorderSide(1, ft.Colors.BLUE_GREY_800),
@@ -65,6 +66,7 @@ def build_ticket_table(
         ),
         data_row_color={ft.ControlState.SELECTED: ft.Colors.BLUE_GREY_800},
         columns=[
+            ft.DataColumn(ft.Text("✓",            **_HEADER_TEXT)),
             ft.DataColumn(ft.Text("KEY",          **_HEADER_TEXT)),
             ft.DataColumn(ft.Text("INSTANCE",     **_HEADER_TEXT)),
             ft.DataColumn(ft.Text("STATUS",       **_HEADER_TEXT)),

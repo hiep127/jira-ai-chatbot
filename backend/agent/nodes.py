@@ -137,7 +137,10 @@ def make_discovery_and_dispatch_node(batch_tool: Any) -> Callable[[dict], Comman
                 goto="aggregate_summary_node",
             )
 
-        return Command(goto=[Send("ticket_summarizer_node", {"ticket_id": k}) for k in valid_keys])
+        return Command(
+            update={"tickets": [{"key": k} for k in valid_keys]},
+            goto=[Send("ticket_summarizer_node", {"ticket_id": k}) for k in valid_keys],
+        )
 
     return node
 

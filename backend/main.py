@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from starlette.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import BaseModel
@@ -385,6 +386,70 @@ async def chat(body: ChatRequest, request: Request) -> ChatResponse:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/stream")
+async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
+    from backend.utils.github_auth import check_auth
+    if not await asyncio.to_thread(check_auth):
+        raise HTTPException(
+            status_code=401,
+            detail="GitHub CLI not authenticated. Run 'gh auth login' to authenticate.",
+        )
+
+    async def event_generator():
+        yield "data: " + json.dumps({"type": "progress", "message": "Fetching ticket list…"}) + "\n\n"
+
+        input_dict = {
+            "messages":         [HumanMessage(content=body.prompt)],
+            "prefixes":         body.prefixes,
+            "mode":             body.mode,
+            "tickets":          [],
+            "summaries":        [],
+            "ticket_summaries": [],
+            "parent_link":      body.parent_link,
+            "custom_jql":       body.custom_jql,
+            "model_id":         body.model_id,
+        }
+        config = {"configurable": {"thread_id": body.thread_id}}
+
+        try:
+            async for chunk in request.app.state.graph.astream(input_dict, config, stream_mode="updates"):
+                for node_name, output in chunk.items():
+                    if node_name == "discovery_and_dispatch_node":
+                        keys = [t["key"] for t in output.get("tickets", [])]
+                        if keys:
+                            preview = ", ".join(keys[:5]) + ("…" if len(keys) > 5 else "")
+                            yield "data: " + json.dumps({
+                                "type": "progress",
+                                "message": f"Fetched {len(keys)} ticket(s): {preview}",
+                            }) + "\n\n"
+                    elif node_name == "ticket_summarizer_node":
+                        summaries = output.get("ticket_summaries", [])
+                        if summaries:
+                            key = summaries[0].split("|")[0].strip()
+                            yield "data: " + json.dumps({
+                                "type": "progress",
+                                "message": f"Summarising {key}…",
+                            }) + "\n\n"
+                    elif node_name == "aggregate_summary_node":
+                        yield "data: " + json.dumps({
+                            "type": "progress",
+                            "message": "Compiling summary…",
+                        }) + "\n\n"
+                        msgs = output.get("messages", [])
+                        response_text = msgs[-1].content if msgs else ""
+                        ticket_data = output.get("ticket_table_data", [])
+                        yield "data: " + json.dumps({
+                            "type": "result",
+                            "response": response_text,
+                            "tickets": ticket_data,
+                            "thread_id": body.thread_id,
+                        }) + "\n\n"
+        except Exception as e:
+            yield "data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.post("/compact", response_model=CompactResponse)

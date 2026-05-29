@@ -102,3 +102,41 @@ ft.TextButton(text="Open Ticket", on_click=handler)  # ❌
 
 * **DO NOT** use bare `asyncio.create_task()` inside Flet event handlers.
 * **CORRECT:** Use `page.run_task(my_async_fn)` so Flet can manage the event loop.
+
+## 10. DataTable Row Selection
+
+* `ft.DataTable(show_checkbox_column=True)` is **silently non-functional** in Flet 0.84 — the column never renders.
+* **CORRECT:** Add `ft.Checkbox` as the first `ft.DataCell` in each row with a matching `ft.DataColumn` header. Wire `on_change` to update state and sync `row.selected` for the highlight. Remove `row.on_select_changed` to avoid double-toggle.
+
+```python
+checkbox = ft.Checkbox(value=False)
+row = ft.DataRow(cells=[ft.DataCell(checkbox), ...])
+
+def _on_check(e):
+    if checkbox.value:
+        app_state["selected"].append(key)
+        row.selected = True
+    else:
+        app_state["selected"] = [k for k in app_state["selected"] if k != key]
+        row.selected = False
+    row.update()
+
+checkbox.on_change = _on_check
+# NO row.on_select_changed assignment
+```
+
+## 11. AlertDialog Close Button in Title
+
+* `ft.AlertDialog.title` accepts any control, not just `ft.Text`.
+* To place an X close button in the dialog header, replace the plain `ft.Text(...)` title with an `ft.Row` containing the title text (`expand=True`) and an `ft.IconButton(ft.Icons.CLOSE, on_click=lambda e: page.pop_dialog())`.
+
+```python
+title=ft.Row(
+    controls=[
+        ft.Text("Select Model", expand=True),
+        ft.IconButton(ft.Icons.CLOSE, tooltip="Close", on_click=lambda e: page.pop_dialog()),
+    ],
+    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+),
+```
