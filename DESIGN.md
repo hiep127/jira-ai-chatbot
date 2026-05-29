@@ -21,6 +21,10 @@
     * Borders: `ft.border.all(1, ft.colors.BLUE_GREY_800)`
     * Zebra-striping: `data_row_color={ft.ControlState.SELECTED: ft.Colors.BLUE_GREY_800}`
 
+### Table Text Colors
+* **Always set `color=ft.Colors.WHITE` on every `ft.Text` inside a `ft.DataTable` cell and column header.** Without an explicit color, Flet renders cell text in a near-black default that is unreadable against the dark surface background.
+* This applies to both header labels (`ft.DataColumn(ft.Text(...))`) and data cells (`ft.DataCell(ft.Text(...))`).
+
 ## 4. Component Rules
 * **Tables:** Always wrap text in `ft.Container` to force column sizing. Summary column width: `400px`.
 * **Buttons:** Use `ft.ElevatedButton` for primary actions; `ft.OutlinedButton` for secondary.

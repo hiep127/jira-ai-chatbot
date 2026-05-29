@@ -4,6 +4,9 @@ from typing import Any
 
 import flet as ft
 
+_CELL_TEXT = {"color": ft.Colors.WHITE}
+_HEADER_TEXT = {"color": ft.Colors.WHITE, "weight": ft.FontWeight.BOLD}
+
 
 def _make_row(t: dict, app_state: dict[str, Any], page: ft.Page) -> ft.DataRow:
     row = ft.DataRow(
@@ -16,17 +19,17 @@ def _make_row(t: dict, app_state: dict[str, Any], page: ft.Page) -> ft.DataRow:
                     on_click=lambda e, u=t.get("url", ""): page.launch_url(u) if u else None,
                 )
             ),
-            ft.DataCell(ft.Text(t["instance"])),
-            ft.DataCell(ft.Text(t["status"])),
+            ft.DataCell(ft.Text(t["instance"], **_CELL_TEXT)),
+            ft.DataCell(ft.Text(t["status"], **_CELL_TEXT)),
             ft.DataCell(
                 ft.Container(
-                    content=ft.Text(t["summary"], max_lines=3, overflow=ft.TextOverflow.ELLIPSIS),
+                    content=ft.Text(t["summary"], max_lines=3, overflow=ft.TextOverflow.ELLIPSIS, **_CELL_TEXT),
                     width=400,
                 )
             ),
-            ft.DataCell(ft.Container(content=ft.Text(t["blocker"]), width=150)),
-            ft.DataCell(ft.Text(t["updated"])),
-            ft.DataCell(ft.Text(t["aging"])),
+            ft.DataCell(ft.Container(content=ft.Text(t["blocker"], **_CELL_TEXT), width=150)),
+            ft.DataCell(ft.Text(t["updated"], **_CELL_TEXT)),
+            ft.DataCell(ft.Text(t["aging"], **_CELL_TEXT)),
         ],
     )
 
@@ -62,13 +65,13 @@ def build_ticket_table(
         ),
         data_row_color={ft.ControlState.SELECTED: ft.Colors.BLUE_GREY_800},
         columns=[
-            ft.DataColumn(ft.Text("KEY",          weight=ft.FontWeight.BOLD)),
-            ft.DataColumn(ft.Text("INSTANCE",     weight=ft.FontWeight.BOLD)),
-            ft.DataColumn(ft.Text("STATUS",       weight=ft.FontWeight.BOLD)),
-            ft.DataColumn(ft.Text("SUMMARY",      weight=ft.FontWeight.BOLD)),
-            ft.DataColumn(ft.Text("BLOCKER",      weight=ft.FontWeight.BOLD)),
-            ft.DataColumn(ft.Text("LAST UPDATED", weight=ft.FontWeight.BOLD)),
-            ft.DataColumn(ft.Text("AGING",        weight=ft.FontWeight.BOLD)),
+            ft.DataColumn(ft.Text("KEY",          **_HEADER_TEXT)),
+            ft.DataColumn(ft.Text("INSTANCE",     **_HEADER_TEXT)),
+            ft.DataColumn(ft.Text("STATUS",       **_HEADER_TEXT)),
+            ft.DataColumn(ft.Text("SUMMARY",      **_HEADER_TEXT)),
+            ft.DataColumn(ft.Text("BLOCKER",      **_HEADER_TEXT)),
+            ft.DataColumn(ft.Text("LAST UPDATED", **_HEADER_TEXT)),
+            ft.DataColumn(ft.Text("AGING",        **_HEADER_TEXT)),
         ],
         rows=rows,
     )
@@ -99,7 +102,7 @@ def build_ticket_table(
                 ),
             ],
         ),
-        bgcolor=ft.Colors.GREY_800,
+        bgcolor=ft.Colors.BLUE_GREY_900,
         border_radius=12,
         padding=ft.Padding(left=12, right=12, top=12, bottom=12),
     )
