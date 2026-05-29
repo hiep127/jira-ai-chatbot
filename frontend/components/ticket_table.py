@@ -11,7 +11,7 @@ def _make_row(t: dict, app_state: dict[str, Any], page: ft.Page) -> ft.DataRow:
         cells=[
             ft.DataCell(
                 ft.TextButton(
-                    text=t["key"],
+                    t["key"],
                     style=ft.ButtonStyle(padding=ft.Padding(left=0, right=0, top=0, bottom=0)),
                     on_click=lambda e, u=t.get("url", ""): page.launch_url(u) if u else None,
                 )

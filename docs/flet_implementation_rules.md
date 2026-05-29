@@ -81,7 +81,24 @@ ft.Dropdown(options=[
 * **DO NOT** use `ft.Column(scroll=True)` for chat history — causes lag.
 * **CORRECT:** Use `ft.ListView(expand=True, auto_scroll=True)`.
 
-## 8. Background Async Tasks
+## 8. Button Text
+
+* **DO NOT** pass `text=` as a keyword argument to `ft.TextButton`, `ft.ElevatedButton`, or `ft.OutlinedButton` — raises `TypeError: __init__() got an unexpected keyword argument 'text'`.
+* **CORRECT:** Pass the label as the first **positional** argument, or use `content=ft.Text(...)` for rich content.
+
+```python
+# Correct — positional
+ft.TextButton("Open Ticket", on_click=handler)
+ft.ElevatedButton("Process Selected", icon=ft.Icons.CHECKLIST, on_click=handler)
+
+# Correct — rich content
+ft.TextButton(content=ft.Text("Open Ticket", color=ft.Colors.BLUE_400), on_click=handler)
+
+# Wrong — raises TypeError
+ft.TextButton(text="Open Ticket", on_click=handler)  # ❌
+```
+
+## 9. Background Async Tasks
 
 * **DO NOT** use bare `asyncio.create_task()` inside Flet event handlers.
 * **CORRECT:** Use `page.run_task(my_async_fn)` so Flet can manage the event loop.
