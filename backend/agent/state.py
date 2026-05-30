@@ -8,6 +8,7 @@ from langgraph.graph import MessagesState
 
 class TicketState(TypedDict):
     ticket_id: str
+    model_id: str
 
 
 class AgentState(MessagesState):
